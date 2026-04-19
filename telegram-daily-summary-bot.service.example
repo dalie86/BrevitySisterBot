@@ -1,0 +1,15 @@
+[Unit]
+Description=Telegram Daily Summary Bot
+After=network.target
+
+[Service]
+Type=simple
+User=botuser
+WorkingDirectory=/opt/telegram-daily-summary-bot
+EnvironmentFile=/opt/telegram-daily-summary-bot/.env
+ExecStart=/opt/telegram-daily-summary-bot/.venv/bin/python /opt/telegram-daily-summary-bot/bot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
