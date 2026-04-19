@@ -7,7 +7,15 @@ from telegram import Bot, Update
 from telegram.constants import ChatType
 
 from storage import Storage, StoredMessage
-from workflow import BOT_TOKEN, BOT_TIMEZONE, STATE_LAST_UPDATE_ID, build_summary_for_chat
+from workflow import (
+    BOT_TOKEN,
+    BOT_TIMEZONE,
+    STATE_LAST_UPDATE_ID,
+    build_summary_for_chat,
+    format_collect_window,
+    now_msk,
+    should_run_regular_collect,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -119,11 +127,26 @@ async def run() -> None:
     if not BOT_TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set.")
 
+    current_time = now_msk()
+    if not should_run_regular_collect(current_time):
+        logger.info(
+            "Skipping collect at %s MSK: outside allowed window %s.",
+            current_time.strftime("%H:%M"),
+            format_collect_window(),
+        )
+        return
+
     storage = Storage()
     bot = Bot(BOT_TOKEN)
 
     offset_value = storage.get_state(STATE_LAST_UPDATE_ID)
     offset = int(offset_value) if offset_value is not None else None
+    logger.info(
+        "Starting collect at %s MSK with offset=%s. Allowed window: %s.",
+        current_time.strftime("%H:%M"),
+        offset,
+        format_collect_window(),
+    )
 
     while True:
         updates = await bot.get_updates(offset=offset, limit=100, timeout=0, allowed_updates=["message"])
@@ -138,7 +161,7 @@ async def run() -> None:
         if len(updates) < 100:
             break
 
-    logger.info("Collection finished.")
+    logger.info("Collection finished successfully.")
 
 
 def main() -> None:

@@ -4,7 +4,7 @@
 
 Схема работы:
 
-- раз в час бот забирает новые `updates` из Telegram и сохраняет сообщения в SQLite;
+- с `10:00` до `20:59` по Москве бот раз в час забирает новые `updates` из Telegram и сохраняет сообщения в SQLite;
 - в `20:40` запускается дополнительный финальный сборщик;
 - в `20:45` бот собирает все сообщения за текущие сутки и готовит LLM-саммари;
 - в `21:00` бот публикует уже готовую сводку в групповой чат.
@@ -49,7 +49,11 @@ cp .env.example .env
 
 - `TELEGRAM_BOT_TOKEN` - токен бота из BotFather
 - `BOT_TIMEZONE` - оставьте `Europe/Moscow`
-- `COLLECT_INTERVAL_MINUTES` - просто справочная настройка, по умолчанию `60`
+- `COLLECT_INTERVAL_MINUTES` - интервал между регулярными запусками, по умолчанию `60`
+- `COLLECT_START_HOUR=10`
+- `COLLECT_START_MINUTE=0`
+- `COLLECT_END_HOUR=20`
+- `COLLECT_END_MINUTE=59`
 - `FINAL_COLLECT_HOUR=20`
 - `FINAL_COLLECT_MINUTE=40`
 - `PREPARE_HOUR=20`
@@ -107,7 +111,7 @@ crontab -e
 Добавить:
 
 ```cron
-0 * * * * cd /opt/telegram-daily-summary-bot && /opt/telegram-daily-summary-bot/.venv/bin/python bot.py collect >> /opt/telegram-daily-summary-bot/logs/collect.log 2>&1
+0 10-20 * * * cd /opt/telegram-daily-summary-bot && /opt/telegram-daily-summary-bot/.venv/bin/python bot.py collect >> /opt/telegram-daily-summary-bot/logs/collect.log 2>&1
 40 20 * * * cd /opt/telegram-daily-summary-bot && /opt/telegram-daily-summary-bot/.venv/bin/python bot.py collect >> /opt/telegram-daily-summary-bot/logs/collect.log 2>&1
 45 20 * * * cd /opt/telegram-daily-summary-bot && /opt/telegram-daily-summary-bot/.venv/bin/python bot.py prepare >> /opt/telegram-daily-summary-bot/logs/prepare.log 2>&1
 0 21 * * * cd /opt/telegram-daily-summary-bot && /opt/telegram-daily-summary-bot/.venv/bin/python bot.py send >> /opt/telegram-daily-summary-bot/logs/send.log 2>&1
@@ -141,6 +145,7 @@ python3 bot.py collect
 - бот не вычитывает старую историю задним числом;
 - он читает только новые `updates`, которые Telegram держит в очереди;
 - один запуск `collect` вычитывает всю доступную очередь `getUpdates`, а не только одну страницу;
+- регулярный сбор работает только в окне `10:00-20:59` по Москве;
 - саммари строится по сообщениям за текущие сутки до `20:40` по Москве;
 - в `21:00` публикуется уже готовый текст из буфера.
 

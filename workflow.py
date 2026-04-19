@@ -5,7 +5,11 @@ from datetime import datetime, time, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional in bare test environments
+    def load_dotenv(*_args, **_kwargs):
+        return False
 
 from storage import Storage
 from summarizer import build_summary
@@ -14,6 +18,10 @@ load_dotenv()
 
 BOT_TIMEZONE = ZoneInfo(os.getenv("BOT_TIMEZONE", "Europe/Moscow"))
 COLLECT_INTERVAL_MINUTES = int(os.getenv("COLLECT_INTERVAL_MINUTES", "60"))
+COLLECT_START_HOUR = int(os.getenv("COLLECT_START_HOUR", "10"))
+COLLECT_START_MINUTE = int(os.getenv("COLLECT_START_MINUTE", "0"))
+COLLECT_END_HOUR = int(os.getenv("COLLECT_END_HOUR", "20"))
+COLLECT_END_MINUTE = int(os.getenv("COLLECT_END_MINUTE", "59"))
 FINAL_COLLECT_HOUR = int(os.getenv("FINAL_COLLECT_HOUR", "20"))
 FINAL_COLLECT_MINUTE = int(os.getenv("FINAL_COLLECT_MINUTE", "40"))
 PREPARE_HOUR = int(os.getenv("PREPARE_HOUR", "20"))
@@ -40,6 +48,38 @@ def final_collect_cutoff(now: Optional[datetime] = None) -> datetime:
         start.date(),
         time(hour=FINAL_COLLECT_HOUR, minute=FINAL_COLLECT_MINUTE),
         tzinfo=BOT_TIMEZONE,
+    )
+
+
+
+
+def collect_window_start(now: Optional[datetime] = None) -> datetime:
+    start = day_start(now)
+    return datetime.combine(
+        start.date(),
+        time(hour=COLLECT_START_HOUR, minute=COLLECT_START_MINUTE),
+        tzinfo=BOT_TIMEZONE,
+    )
+
+
+def collect_window_end(now: Optional[datetime] = None) -> datetime:
+    start = day_start(now)
+    return datetime.combine(
+        start.date(),
+        time(hour=COLLECT_END_HOUR, minute=COLLECT_END_MINUTE),
+        tzinfo=BOT_TIMEZONE,
+    )
+
+
+def should_run_regular_collect(now: Optional[datetime] = None) -> bool:
+    current = now or now_msk()
+    return collect_window_start(current) <= current <= collect_window_end(current)
+
+
+def format_collect_window() -> str:
+    return (
+        f"{COLLECT_START_HOUR:02d}:{COLLECT_START_MINUTE:02d}-"
+        f"{COLLECT_END_HOUR:02d}:{COLLECT_END_MINUTE:02d}"
     )
 
 
