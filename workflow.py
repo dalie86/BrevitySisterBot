@@ -29,7 +29,7 @@ PREPARE_MINUTE = int(os.getenv("PREPARE_MINUTE", "45"))
 SEND_HOUR = int(os.getenv("SUMMARY_HOUR", "21"))
 SEND_MINUTE = int(os.getenv("SUMMARY_MINUTE", "0"))
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-MAX_SUMMARY_LENGTH = 1000
+MAX_SUMMARY_LENGTH = 2000
 STATE_LAST_UPDATE_ID = "last_update_id"
 
 
