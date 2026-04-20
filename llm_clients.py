@@ -83,7 +83,7 @@ def _request_ollama(system_prompt: str, user_prompt: str) -> Optional[str]:
         "format": "json",
         "keep_alive": keep_alive,
         "options": {
-            "temperature": 0.2,
+            "temperature": 0.31,
         },
     }
     headers = {

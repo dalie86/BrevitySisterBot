@@ -12,7 +12,7 @@ from storage import StoredMessage
 
 logger = logging.getLogger(__name__)
 
-SUMMARY_LIMIT = 1000
+SUMMARY_LIMIT = 1200
 TOPIC_LIMIT = 4
 TRANSCRIPT_CHAR_LIMIT = 12000
 
@@ -108,7 +108,12 @@ def build_summary(
     if not messages:
         return _compose_message(
             headline="Сегодня в чате было тихо, важных обсуждений не набралось.",
-            topics=["без заметных тем"],
+            topics=[
+                {
+                    "title": "Без заметных тем",
+                    "details": "В переписке не набралось крупных обсуждений или повторяющихся линий.",
+                }
+            ],
             champion_name="пока никто",
         )
 
@@ -132,15 +137,22 @@ def build_summary(
 
 def _build_llm_summary(messages: Sequence[StoredMessage]) -> Optional[dict[str, object]]:
     system_prompt = (
-        "Ты редактор вечерней сводки для телеграм-группы. "
+        "Ты редактор вечерней сводки для телеграм-группы. Пиши живо, но строго по фактам. "
+        "Не пересказывай весь чат. Выбери только самые плотные и важные линии обсуждения. "
         "Верни строго JSON без markdown и пояснений. Формат ответа: "
-        '{"headline":"короткая выжимка главного","topics":["тема 1","тема 2","тема 3"]}. '
-        "headline: до 220 символов, по-русски, только суть дня. "
-        "topics: от 2 до 4 коротких тем, каждая до 32 символов."
+        '{"headline":"короткая выжимка главного","topics":[{"title":"тема 1","details":"тезис 1; тезис 2; тезис 3; тезис 4"},{"title":"тема 2","details":"тезис 1; тезис 2; тезис 3; тезис 4"}]}. '
+        "headline: до 180 символов, одна емкая выжимка главного напряжения, решения или незакрытого вопроса дня. "
+        "topics: 4 темы, если в переписке действительно хватает материала; не выдумывай темы из слабых одноразовых реплик. "
+        "title: до 50 символов, конкретный заголовок без канцелярита. "
+        "details: до 250 символов, в одну строку, ровно 4 коротких тезиса через ';'. "
+        "Для каждого details: тезис 1 - что произошло; тезис 2 - в чем была проблема, спор или важная деталь; тезис 3 - реакция, позиция или важный контекст; тезис 4 - к чему пришли или что осталось открытым. "
+        "Запрещено: общие фразы вроде 'тема активно обсуждалась', 'участники делились мнениями', 'обсуждение продолжилось'; повторять headline внутри topics; добавлять темы, которые мелькнули один раз."
     )
     user_prompt = (
         "Сделай вечернюю сводку по переписке за день. "
-        "Нужны самые обсуждаемые темы и одна короткая главная выжимка.\n\n"
+        "Нужны самые обсуждаемые темы и одна короткая главная выжимка. "
+        "Каждую тему верни отдельным пунктом: короткий заголовок и ровно 4 конкретных тезиса по сути. "
+        "Старайся вернуть именно 4 темы, но не выдумывай лишнее, если в переписке нет материала.\n\n"
         f"Переписка:\n{_build_transcript(messages)}"
     )
 
@@ -155,12 +167,7 @@ def _build_llm_summary(messages: Sequence[StoredMessage]) -> Optional[dict[str, 
 
     headline = _sanitize_text(str(parsed.get("headline", "")), limit=220)
     raw_topics = parsed.get("topics", [])
-    topics = []
-    if isinstance(raw_topics, list):
-        for item in raw_topics:
-            topic = _sanitize_topic(str(item))
-            if topic:
-                topics.append(topic)
+    topics = _parse_topics(raw_topics)
 
     if not headline and not topics:
         return None
@@ -209,24 +216,36 @@ def _find_top_participant(messages: Sequence[StoredMessage]) -> str:
     return winner
 
 
-def _heuristic_topics(messages: Sequence[StoredMessage]) -> list[str]:
+def _heuristic_topics(messages: Sequence[StoredMessage]) -> list[dict[str, str]]:
     token_counts: Counter[str] = Counter()
     for message in messages:
         token_counts.update(_extract_keywords(message.text.lower()))
 
     topics = []
     for token, _count in token_counts.most_common(12):
-        topic = _sanitize_topic(token)
-        if topic and topic not in topics:
-            topics.append(topic)
+        title = _sanitize_topic_title(token)
+        if title and title not in {topic["title"] for topic in topics}:
+            topics.append(
+                {
+                    "title": title,
+                    "details": _sanitize_topic_details(
+                        f"Тему обсуждали несколько раз; к ней возвращались по ходу дня; она заметно влияла на общую повестку чата."
+                    ),
+                }
+            )
         if len(topics) == TOPIC_LIMIT:
             break
-    return topics or ["без выраженной темы"]
+    return topics or [
+        {
+            "title": "Без выраженной темы",
+            "details": "Обсуждение было разрозненным, без одной явно доминирующей линии.",
+        }
+    ]
 
 
-def _heuristic_headline(messages: Sequence[StoredMessage], topics: Sequence[str]) -> str:
+def _heuristic_headline(messages: Sequence[StoredMessage], topics: Sequence[dict[str, str]]) -> str:
     participant_count = len({_display_name(message) for message in messages})
-    top_topics = ", ".join(topics[:3])
+    top_topics = ", ".join(topic["title"] for topic in topics[:3])
     return _sanitize_text(
         (
             f"За день участники активно обсуждали {top_topics}. "
@@ -245,10 +264,15 @@ def _display_name(message: StoredMessage) -> str:
     return message.username or message.full_name or "участник"
 
 
-def _sanitize_topic(text: str) -> str:
-    cleaned = _sanitize_text(text, limit=32)
+def _sanitize_topic_title(text: str) -> str:
+    cleaned = _sanitize_text(text, limit=50)
     cleaned = cleaned.strip(" -.,;:!?\n\t")
     return cleaned
+
+
+def _sanitize_topic_details(text: str, *, limit: int = 250) -> str:
+    cleaned = _sanitize_text(text, limit=limit)
+    return cleaned.strip(" -.,;:!?\n\t")
 
 
 def _sanitize_text(text: str, *, limit: int) -> str:
@@ -259,44 +283,111 @@ def _sanitize_text(text: str, *, limit: int) -> str:
     return shortened + "…"
 
 
-def _compose_message(headline: str, topics: Sequence[str], champion_name: str) -> str:
-    intro = "самое главное за сегодня в сводке новостей в 21:00:"
+def _parse_topics(raw_topics: object) -> list[dict[str, str]]:
+    topics = []
+    if not isinstance(raw_topics, list):
+        return topics
+
+    for item in raw_topics:
+        if isinstance(item, dict):
+            title = _sanitize_topic_title(str(item.get("title", "")))
+            details = _sanitize_topic_details(str(item.get("details", "")))
+            if title:
+                topics.append(
+                    {
+                        "title": title,
+                        "details": details or "Тема заметно обсуждалась в течение дня.",
+                    }
+                )
+            continue
+
+        if isinstance(item, str):
+            title = _sanitize_topic_title(item)
+            if title:
+                topics.append(
+                    {
+                        "title": title,
+                        "details": "Тема заметно обсуждалась в течение дня.",
+                    }
+                )
+
+    return topics
+
+
+def _compose_message(headline: str, topics: Sequence[dict[str, str]], champion_name: str) -> str:
+    intro = "самое главное за сегодня в сводке новостей:"
     champion_line = (
         f"- самый активный участник сегодня - {champion_name}, поздравляем. "
-        "Ты больше всех активничал! Возьми пирожок с полочки, там два, крайний не бери!"
+        "Ты больше всех активничал! Возьми поминальный набор с полочки, там два, крайний не бери!"
     )
+    normalized_topics = [
+        {
+            "title": _sanitize_topic_title(topic.get("title", "")),
+            "details": _sanitize_topic_details(topic.get("details", "")),
+        }
+        for topic in topics
+        if topic.get("title")
+    ] or [
+        {
+            "title": "Без заметных тем",
+            "details": "В переписке не выделилось устойчивых обсуждений.",
+        }
+    ]
 
-    headline = _sanitize_text(headline, limit=260)
-    topics_text = ", ".join(_sanitize_topic(topic) for topic in topics if topic)
-    topics_text = _sanitize_text(topics_text or "без заметных тем", limit=220)
-
-    message = (
-        f"{intro}\n"
-        f"- главное: {headline}\n"
-        f"- самые обсуждаемые темы: {topics_text}\n"
-        f"{champion_line}"
-    )
-    if len(message) <= SUMMARY_LIMIT:
-        return message
-
-    headline = _sanitize_text(headline, limit=180)
-    topics_text = _sanitize_text(topics_text, limit=140)
-    message = (
-        f"{intro}\n"
-        f"- главное: {headline}\n"
-        f"- самые обсуждаемые темы: {topics_text}\n"
-        f"{champion_line}"
-    )
-    if len(message) <= SUMMARY_LIMIT:
-        return message
+    for headline_limit, details_limit, topic_limit in (
+        (180, 230, 4),
+        (165, 200, 4),
+        (150, 170, 3),
+        (135, 150, 2),
+    ):
+        message = _render_message(
+            intro=intro,
+            headline=_sanitize_text(headline, limit=headline_limit),
+            topics=normalized_topics[:topic_limit],
+            details_limit=details_limit,
+            champion_line=champion_line,
+        )
+        if len(message) <= SUMMARY_LIMIT:
+            return message
 
     overflow = len(message) - SUMMARY_LIMIT
-    reduced_champion = _sanitize_text(champion_name, limit=max(8, len(champion_name) - overflow - 10))
-    final_message = (
-        f"{intro}\n"
-        f"- главное: {headline}\n"
-        f"- самые обсуждаемые темы: {topics_text}\n"
+    reduced_champion = _sanitize_text(
+        champion_name,
+        limit=max(8, len(champion_name) - overflow - 10),
+    )
+    final_champion_line = (
         f"- самый активный участник сегодня - {reduced_champion}, поздравляем. "
-        "Ты больше всех активничал! Возьми пирожок с полочки, там два, крайний не бери!"
+        "Ты больше всех активничал! Возьми поминальный набор с полочки, там два, крайний не бери!"
+    )
+    final_message = _render_message(
+        intro=intro,
+        headline=_sanitize_text(headline, limit=110),
+        topics=normalized_topics[:2],
+        details_limit=130,
+        champion_line=final_champion_line,
     )
     return final_message[:SUMMARY_LIMIT].rstrip()
+
+
+def _render_message(
+    *,
+    intro: str,
+    headline: str,
+    topics: Sequence[dict[str, str]],
+    details_limit: int,
+    champion_line: str,
+) -> str:
+    topic_lines = []
+    for topic in topics:
+        title = _sanitize_topic_title(topic.get("title", ""))
+        details = _sanitize_topic_details(topic.get("details", ""), limit=details_limit)
+        if title:
+            topic_lines.append(f"- {title}: {details or 'Тема заметно обсуждалась в течение дня.'}")
+
+    topic_block = "\n".join(topic_lines) or "- Без заметных тем: В переписке не выделилось устойчивых обсуждений."
+    return (
+        f"{intro}\n"
+        f"- главное: {headline}\n"
+        f"{topic_block}\n"
+        f"{champion_line}"
+    )

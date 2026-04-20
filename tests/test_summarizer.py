@@ -11,7 +11,10 @@ class SummarizerTests(unittest.TestCase):
     def test_build_summary_uses_required_format_and_char_winner(self, mock_request_summary_json) -> None:
         mock_request_summary_json.return_value = (
             '{"headline":"Команда согласовала релиз и обсудила баги в оплате.",'
-            '"topics":["релиз","оплата","баги"]}'
+            '"topics":['
+            '{"title":"Релиз","details":"Согласовали сроки; сверили чеклист; подтвердили готовность."},'
+            '{"title":"Оплата","details":"Проверили баг; обсудили логи; определили следующий шаг."}'
+            ']}'
         )
         messages = [
             StoredMessage(
@@ -50,11 +53,42 @@ class SummarizerTests(unittest.TestCase):
             end=datetime(2026, 4, 10, 21, 0, 0),
         )
 
-        self.assertTrue(summary.startswith("самое главное за сегодня в сводке новостей в 21:00:"))
+        self.assertTrue(summary.startswith("самое главное за сегодня в сводке новостей:"))
         self.assertIn("- самое главное", summary.replace("- главное", "- самое главное"))
-        self.assertIn("- самые обсуждаемые темы: релиз, оплата, баги", summary)
+        self.assertIn("- Релиз: Согласовали сроки; сверили чеклист; подтвердили готовность", summary)
+        self.assertIn("- Оплата: Проверили баг; обсудили логи; определили следующий шаг", summary)
         self.assertIn("- самый активный участник сегодня - @bob", summary)
-        self.assertLessEqual(len(summary), 1000)
+        self.assertIn("Возьми поминальный набор с полочки", summary)
+        self.assertLessEqual(len(summary), 1200)
+
+    @patch("summarizer.request_summary_json")
+    def test_build_summary_accepts_old_string_topic_format(self, mock_request_summary_json) -> None:
+        mock_request_summary_json.return_value = (
+            '{"headline":"Команда обсуждала релиз.",'
+            '"topics":["релиз","дедлайны"]}'
+        )
+        messages = [
+            StoredMessage(
+                telegram_message_id=1,
+                chat_id=1,
+                user_id=1,
+                username="@alice",
+                full_name="Alice",
+                text="Обсудим релиз и дедлайны на сегодня.",
+                sent_at=datetime(2026, 4, 10, 10, 0, 0),
+            )
+        ]
+
+        summary = build_summary(
+            messages,
+            chat_title="Test Chat",
+            start=datetime(2026, 4, 10, 0, 0, 0),
+            end=datetime(2026, 4, 10, 21, 0, 0),
+        )
+
+        self.assertIn("- релиз: Тема заметно обсуждалась в течение дня", summary)
+        self.assertIn("- дедлайны: Тема заметно обсуждалась в течение дня", summary)
+        self.assertLessEqual(len(summary), 1200)
 
     @patch("summarizer.request_summary_json")
     def test_build_summary_falls_back_without_llm_and_stays_short(self, mock_request_summary_json) -> None:
@@ -79,7 +113,7 @@ class SummarizerTests(unittest.TestCase):
         )
 
         self.assertIn("@alice", summary)
-        self.assertLessEqual(len(summary), 1000)
+        self.assertLessEqual(len(summary), 1200)
 
 
 if __name__ == "__main__":

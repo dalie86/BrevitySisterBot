@@ -3,7 +3,7 @@
 Создай папку `logs` в корне проекта перед включением `cron`:
 
 ```bash
-mkdir -p /Users/pavel/Desktop/projects/BrevitySisterBot/logs
+mkdir -p /Users/pavel/projects/BrevitySisterBot/logs
 ```
 
 Основные логи:
@@ -16,8 +16,8 @@ mkdir -p /Users/pavel/Desktop/projects/BrevitySisterBot/logs
 Полезные команды проверки:
 
 ```bash
-tail -n 50 /Users/pavel/Desktop/projects/BrevitySisterBot/logs/collect.log
-tail -n 50 /Users/pavel/Desktop/projects/BrevitySisterBot/logs/prepare.log
-tail -n 50 /Users/pavel/Desktop/projects/BrevitySisterBot/logs/send.log
-tail -n 50 /Users/pavel/Desktop/projects/BrevitySisterBot/logs/ollama.log
+tail -n 50 /Users/pavel/projects/BrevitySisterBot/logs/collect.log
+tail -n 50 /Users/pavel/projects/BrevitySisterBot/logs/prepare.log
+tail -n 50 /Users/pavel/projects/BrevitySisterBot/logs/send.log
+tail -n 50 /Users/pavel/projects/BrevitySisterBot/logs/ollama.log
 ```
