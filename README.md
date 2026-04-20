@@ -60,7 +60,25 @@ cp .env.example .env
 - `PREPARE_MINUTE=45`
 - `SUMMARY_HOUR=21`
 - `SUMMARY_MINUTE=0`
-- `LLM_PROVIDER` - `yandex` или `gigachat`
+- `LLM_PROVIDER` - `ollama`, `yandex` или `gigachat`
+
+### Вариант 0. Локальная модель через Ollama
+
+Если у вас локально поднят `Ollama`, бот может делать саммари через локальную модель, например `qwen2.5:14b-instruct`.
+
+Минимально нужны:
+
+- `LLM_PROVIDER=ollama`
+- `OLLAMA_MODEL=qwen2.5:14b-instruct`
+
+Опционально:
+
+- `OLLAMA_API_URL`, по умолчанию `http://127.0.0.1:11434/api/chat`
+- `OLLAMA_KEEP_ALIVE`, по умолчанию `10m`
+
+Для отладки запросов к локальной модели смотри отдельный лог:
+
+- `logs/ollama.log`
 
 ### Вариант 1. YandexGPT
 
