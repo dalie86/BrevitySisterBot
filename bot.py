@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sys
 
+from archive_day import main as archive_main
+from cleanup_day import main as cleanup_main
 from collect_updates import main as collect_main
 from prepare_summary import main as prepare_main
 from send_summary import main as send_main
@@ -18,12 +20,20 @@ def main() -> None:
     if command == "send":
         send_main()
         return
+    if command == "archive":
+        archive_main()
+        return
+    if command == "cleanup":
+        cleanup_main()
+        return
 
     raise SystemExit(
         "Usage:\n"
         "  python3 bot.py collect\n"
         "  python3 bot.py prepare\n"
-        "  python3 bot.py send"
+        "  python3 bot.py send\n"
+        "  python3 bot.py archive\n"
+        "  python3 bot.py cleanup"
     )
 
 

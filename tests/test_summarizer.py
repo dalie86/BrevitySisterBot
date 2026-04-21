@@ -91,6 +91,54 @@ class SummarizerTests(unittest.TestCase):
         self.assertLessEqual(len(summary), 1200)
 
     @patch("summarizer.request_summary_json")
+    def test_build_summary_repairs_nested_llm_payload(self, mock_request_summary_json) -> None:
+        mock_request_summary_json.side_effect = [
+            (
+                '{"type":"summary","data":{"topics":["будет","меня"],'
+                '"key_points":["неясны даты и место","участники ждут конкретику","нужно больше практики","есть открытые вопросы"]}}'
+            ),
+            (
+                '{"headline":"Есть неясность по планам и подготовке.",'
+                '"topics":['
+                '{"title":"Подготовка","details":"неясны даты и место; участники ждут конкретику; нужно больше практики; есть открытые вопросы"},'
+                '{"title":"Логистика","details":"обсуждаются условия; участники ждут ясности; тема влияет на планы; решения пока нет"}'
+                ']}'
+            ),
+        ]
+        messages = [
+            StoredMessage(
+                telegram_message_id=1,
+                chat_id=1,
+                user_id=1,
+                username="@alice",
+                full_name="Alice",
+                text="Нам нужны точные даты и больше ясности по плану.",
+                sent_at=datetime(2026, 4, 10, 10, 0, 0),
+            ),
+            StoredMessage(
+                telegram_message_id=2,
+                chat_id=1,
+                user_id=2,
+                username="@bob",
+                full_name="Bob",
+                text="Без практики и понимания логистики идти рано.",
+                sent_at=datetime(2026, 4, 10, 10, 5, 0),
+            ),
+        ]
+
+        summary = build_summary(
+            messages,
+            chat_title="Test Chat",
+            start=datetime(2026, 4, 10, 0, 0, 0),
+            end=datetime(2026, 4, 10, 21, 0, 0),
+        )
+
+        self.assertIn("- Подготовка:", summary)
+        self.assertIn("- Логистика:", summary)
+        self.assertEqual(mock_request_summary_json.call_count, 2)
+        self.assertLessEqual(len(summary), 1200)
+
+    @patch("summarizer.request_summary_json")
     def test_build_summary_falls_back_without_llm_and_stays_short(self, mock_request_summary_json) -> None:
         mock_request_summary_json.return_value = None
         messages = [

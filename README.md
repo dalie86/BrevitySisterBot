@@ -8,6 +8,8 @@
 - в `20:40` запускается дополнительный финальный сборщик;
 - в `20:45` бот собирает все сообщения за текущие сутки и готовит LLM-саммари;
 - в `21:00` бот публикует уже готовую сводку в групповой чат.
+- в `21:10` бот архивирует сегодняшние сообщения и готовую сводку в `archive.db`;
+- в `21:15` бот очищает сегодняшние рабочие данные из `bot.db`.
 
 ## Важное ограничение Telegram
 
@@ -28,6 +30,8 @@ Telegram Bot API не умеет разово выгружать полную и
 python3 bot.py collect
 python3 bot.py prepare
 python3 bot.py send
+python3 bot.py archive
+python3 bot.py cleanup
 ```
 
 То же самое можно вызывать напрямую:
@@ -35,6 +39,8 @@ python3 bot.py send
 - `python3 collect_updates.py`
 - `python3 prepare_summary.py`
 - `python3 send_summary.py`
+- `python3 archive_day.py`
+- `python3 cleanup_day.py`
 
 ## Установка
 
@@ -133,6 +139,8 @@ crontab -e
 40 20 * * * cd /opt/telegram-daily-summary-bot && /opt/telegram-daily-summary-bot/.venv/bin/python bot.py collect >> /opt/telegram-daily-summary-bot/logs/collect.log 2>&1
 45 20 * * * cd /opt/telegram-daily-summary-bot && /opt/telegram-daily-summary-bot/.venv/bin/python bot.py prepare >> /opt/telegram-daily-summary-bot/logs/prepare.log 2>&1
 0 21 * * * cd /opt/telegram-daily-summary-bot && /opt/telegram-daily-summary-bot/.venv/bin/python bot.py send >> /opt/telegram-daily-summary-bot/logs/send.log 2>&1
+10 21 * * * cd /opt/telegram-daily-summary-bot && /opt/telegram-daily-summary-bot/.venv/bin/python bot.py archive >> /opt/telegram-daily-summary-bot/logs/archive.log 2>&1
+15 21 * * * cd /opt/telegram-daily-summary-bot && /opt/telegram-daily-summary-bot/.venv/bin/python bot.py cleanup >> /opt/telegram-daily-summary-bot/logs/cleanup.log 2>&1
 ```
 
 Перед этим создай папку для логов:
@@ -166,6 +174,8 @@ python3 bot.py collect
 - регулярный сбор работает только в окне `10:00-20:59` по Москве;
 - саммари строится по сообщениям за текущие сутки до `20:40` по Москве;
 - в `21:00` публикуется уже готовый текст из буфера.
+- в `21:10` данные дня копируются в `archive.db`;
+- в `21:15` рабочая база очищается от сегодняшних сообщений и сводки.
 
 ## Тесты
 

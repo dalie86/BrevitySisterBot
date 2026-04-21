@@ -2,3 +2,5 @@
 40 20 * * * cd /Users/pavel/projects/BrevitySisterBot && /Users/pavel/projects/BrevitySisterBot/.venv/bin/python bot.py collect >> /Users/pavel/projects/BrevitySisterBot/logs/collect.log 2>&1
 45 20 * * * cd /Users/pavel/projects/BrevitySisterBot && /Users/pavel/projects/BrevitySisterBot/.venv/bin/python bot.py prepare >> /Users/pavel/projects/BrevitySisterBot/logs/prepare.log 2>&1
 0 21 * * * cd /Users/pavel/projects/BrevitySisterBot && /Users/pavel/projects/BrevitySisterBot/.venv/bin/python bot.py send >> /Users/pavel/projects/BrevitySisterBot/logs/send.log 2>&1
+10 21 * * * cd /Users/pavel/projects/BrevitySisterBot && /Users/pavel/projects/BrevitySisterBot/.venv/bin/python bot.py archive >> /Users/pavel/projects/BrevitySisterBot/logs/archive.log 2>&1
+15 21 * * * cd /Users/pavel/projects/BrevitySisterBot && /Users/pavel/projects/BrevitySisterBot/.venv/bin/python bot.py cleanup >> /Users/pavel/projects/BrevitySisterBot/logs/cleanup.log 2>&1

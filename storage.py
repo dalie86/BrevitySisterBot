@@ -200,6 +200,19 @@ class Storage:
                 (cutoff.isoformat(timespec="seconds"),),
             )
 
+    def delete_messages_between(self, start: datetime, end: datetime) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                DELETE FROM messages
+                WHERE sent_at >= ? AND sent_at < ?
+                """,
+                (
+                    start.isoformat(timespec="seconds"),
+                    end.isoformat(timespec="seconds"),
+                ),
+            )
+
     def save_prepared_summary(
         self,
         *,
@@ -242,6 +255,33 @@ class Storage:
         if not row:
             return None
         return str(row["summary_text"])
+
+    def get_prepared_summary_record(
+        self,
+        *,
+        chat_id: int,
+        summary_date: str,
+    ) -> Optional[sqlite3.Row]:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT summary_text, prepared_at
+                FROM prepared_summaries
+                WHERE chat_id = ? AND summary_date = ?
+                """,
+                (chat_id, summary_date),
+            ).fetchone()
+        return row
+
+    def delete_prepared_summary(self, *, chat_id: int, summary_date: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                DELETE FROM prepared_summaries
+                WHERE chat_id = ? AND summary_date = ?
+                """,
+                (chat_id, summary_date),
+            )
 
     def delete_prepared_summaries_before(self, summary_date: str) -> None:
         with self._connect() as connection:

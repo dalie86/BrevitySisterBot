@@ -15,6 +15,30 @@ logger = logging.getLogger(__name__)
 SUMMARY_LIMIT = 1200
 TOPIC_LIMIT = 4
 TRANSCRIPT_CHAR_LIMIT = 12000
+MIN_TOPIC_MESSAGE_COUNT = 2
+MIN_TOPIC_PARTICIPANT_COUNT = 2
+GENERIC_TOPIC_TITLES = {
+    "будет",
+    "были",
+    "важно",
+    "вопрос",
+    "вопросы",
+    "дело",
+    "жизнь",
+    "завтра",
+    "люди",
+    "меня",
+    "можно",
+    "нужно",
+    "помощь",
+    "потом",
+    "сегодня",
+    "слова",
+    "тема",
+    "тут",
+    "человек",
+    "любой",
+}
 
 STOPWORDS = {
     "а",
@@ -157,21 +181,19 @@ def _build_llm_summary(messages: Sequence[StoredMessage]) -> Optional[dict[str, 
     )
 
     raw_response = request_summary_json(system_prompt, user_prompt)
-    if not raw_response:
-        return None
+    summary = _parse_summary_payload(raw_response)
+    if _is_summary_usable(summary):
+        return summary
 
-    parsed = _extract_json(raw_response)
-    if not parsed:
-        logger.warning("Could not parse LLM JSON: %s", raw_response[:300])
-        return None
+    if raw_response:
+        logger.warning("Could not parse primary LLM JSON: %s", raw_response[:300])
+        repaired_response = _repair_llm_summary(raw_response)
+        repaired_summary = _parse_summary_payload(repaired_response)
+        if _is_summary_usable(repaired_summary):
+            logger.info("LLM summary repaired successfully after invalid primary response.")
+            return repaired_summary
 
-    headline = _sanitize_text(str(parsed.get("headline", "")), limit=220)
-    raw_topics = parsed.get("topics", [])
-    topics = _parse_topics(raw_topics)
-
-    if not headline and not topics:
-        return None
-    return {"headline": headline, "topics": topics[:TOPIC_LIMIT]}
+    return None
 
 
 def _extract_json(raw_response: str) -> Optional[dict[str, object]]:
@@ -187,6 +209,100 @@ def _extract_json(raw_response: str) -> Optional[dict[str, object]]:
             return data if isinstance(data, dict) else None
         except json.JSONDecodeError:
             return None
+
+
+def _parse_summary_payload(raw_response: Optional[str]) -> Optional[dict[str, object]]:
+    if not raw_response:
+        return None
+
+    parsed = _extract_json(raw_response)
+    if not parsed:
+        return None
+
+    normalized = _normalize_summary_payload(parsed)
+    headline = _sanitize_text(str(normalized.get("headline", "")), limit=220)
+    raw_topics = normalized.get("topics", [])
+    topics = _parse_topics(raw_topics)
+    if not headline and not topics:
+        return None
+    return {"headline": headline, "topics": topics[:TOPIC_LIMIT]}
+
+
+def _normalize_summary_payload(parsed: dict[str, object]) -> dict[str, object]:
+    if "headline" in parsed or "topics" in parsed:
+        return parsed
+
+    data = parsed.get("data")
+    if not isinstance(data, dict):
+        return parsed
+
+    headline = (
+        data.get("headline")
+        or data.get("summary")
+        or data.get("main_point")
+        or _headline_from_key_points(data.get("key_points"))
+    )
+    topics = _topics_from_nested_payload(data)
+    return {"headline": headline or "", "topics": topics}
+
+
+def _headline_from_key_points(key_points: object) -> str:
+    if not isinstance(key_points, list):
+        return ""
+    cleaned_points = [
+        _sanitize_text(str(item), limit=120)
+        for item in key_points
+        if str(item).strip()
+    ]
+    return _sanitize_text(". ".join(cleaned_points[:2]), limit=180)
+
+
+def _topics_from_nested_payload(data: dict[str, object]) -> list[dict[str, str]]:
+    topic_details = data.get("topic_details")
+    if isinstance(topic_details, list):
+        return _parse_topics(topic_details)
+
+    raw_topics = data.get("topics")
+    raw_key_points = data.get("key_points")
+    if not isinstance(raw_topics, list):
+        return []
+
+    key_points = [
+        _sanitize_topic_details(str(item))
+        for item in raw_key_points
+        if str(item).strip()
+    ] if isinstance(raw_key_points, list) else []
+    details_fallback = "; ".join(point for point in key_points[:4] if point)
+
+    topics: list[dict[str, str]] = []
+    for item in raw_topics:
+        title = _sanitize_topic_title(str(item))
+        if not title:
+            continue
+        topics.append(
+            {
+                "title": title,
+                "details": details_fallback or "Тема была одной из заметных линий дня; в ней остались открытые вопросы.",
+            }
+        )
+    return topics
+
+
+def _repair_llm_summary(raw_response: str) -> Optional[str]:
+    repair_system_prompt = (
+        "Ты исправляешь ответ другой модели. "
+        "Верни строго JSON без markdown и пояснений в формате "
+        '{"headline":"короткая выжимка главного","topics":[{"title":"тема 1","details":"тезис 1; тезис 2; тезис 3; тезис 4"}]}. '
+        "Нужны 2-4 темы. title до 50 символов. details до 250 символов. "
+        "Если в исходном ответе тема есть, но детали размыты, собери детали из фактов исходного ответа. "
+        "Не добавляй новых фактов от себя."
+    )
+    repair_user_prompt = (
+        "Приведи этот ответ к целевому JSON-формату саммари. "
+        "Сохрани только факты из исходного ответа.\n\n"
+        f"Исходный ответ модели:\n{raw_response[:8000]}"
+    )
+    return request_summary_json(repair_system_prompt, repair_user_prompt)
 
 
 def _build_transcript(messages: Sequence[StoredMessage]) -> str:
@@ -218,18 +334,31 @@ def _find_top_participant(messages: Sequence[StoredMessage]) -> str:
 
 def _heuristic_topics(messages: Sequence[StoredMessage]) -> list[dict[str, str]]:
     token_counts: Counter[str] = Counter()
+    token_messages: dict[str, int] = {}
+    token_participants: dict[str, set[str]] = {}
     for message in messages:
-        token_counts.update(_extract_keywords(message.text.lower()))
+        tokens = set(_extract_keywords(message.text.lower()))
+        token_counts.update(tokens)
+        for token in tokens:
+            token_messages[token] = token_messages.get(token, 0) + 1
+            token_participants.setdefault(token, set()).add(_display_name(message))
 
     topics = []
     for token, _count in token_counts.most_common(12):
         title = _sanitize_topic_title(token)
-        if title and title not in {topic["title"] for topic in topics}:
+        participant_count = len(token_participants.get(token, set()))
+        if (
+            title
+            and title not in {topic["title"] for topic in topics}
+            and not _is_low_quality_topic_title(title)
+            and token_messages.get(token, 0) >= MIN_TOPIC_MESSAGE_COUNT
+            and participant_count >= MIN_TOPIC_PARTICIPANT_COUNT
+        ):
             topics.append(
                 {
                     "title": title,
                     "details": _sanitize_topic_details(
-                        f"Тему обсуждали несколько раз; к ней возвращались по ходу дня; она заметно влияла на общую повестку чата."
+                        f"Тема всплывала в нескольких сообщениях; в обсуждение включались разные участники; у темы был заметный контекст дня; по ней не всё осталось окончательно ясно."
                     ),
                 }
             )
@@ -257,7 +386,11 @@ def _heuristic_headline(messages: Sequence[StoredMessage], topics: Sequence[dict
 
 def _extract_keywords(text: str) -> list[str]:
     words = re.findall(r"[a-zA-Zа-яА-ЯёЁ]{4,}", text)
-    return [word.lower() for word in words if word.lower() not in STOPWORDS]
+    return [
+        word.lower()
+        for word in words
+        if word.lower() not in STOPWORDS and word.lower() not in GENERIC_TOPIC_TITLES
+    ]
 
 
 def _display_name(message: StoredMessage) -> str:
@@ -273,6 +406,62 @@ def _sanitize_topic_title(text: str) -> str:
 def _sanitize_topic_details(text: str, *, limit: int = 250) -> str:
     cleaned = _sanitize_text(text, limit=limit)
     return cleaned.strip(" -.,;:!?\n\t")
+
+
+def _is_summary_usable(summary: Optional[dict[str, object]]) -> bool:
+    if not isinstance(summary, dict):
+        return False
+
+    headline = str(summary.get("headline", "")).strip()
+    topics = summary.get("topics")
+    if len(headline) < 12 or not isinstance(topics, list) or len(topics) < 2:
+        return False
+
+    good_topics = 0
+    seen_titles: set[str] = set()
+    for topic in topics:
+        if not isinstance(topic, dict):
+            continue
+        title = _sanitize_topic_title(str(topic.get("title", "")))
+        details = _sanitize_topic_details(str(topic.get("details", "")))
+        if (
+            title
+            and details
+            and title.lower() not in seen_titles
+            and not _is_low_quality_topic_title(title)
+            and (
+                not _is_low_quality_topic_details(details)
+                or details.startswith("Тема заметно обсуждалась в течение дня")
+            )
+        ):
+            good_topics += 1
+            seen_titles.add(title.lower())
+
+    return good_topics >= 2
+
+
+def _is_low_quality_topic_title(title: str) -> bool:
+    compact = title.strip().lower()
+    if len(compact) < 4:
+        return True
+    if compact in STOPWORDS or compact in GENERIC_TOPIC_TITLES:
+        return True
+    return compact.isdigit()
+
+
+def _is_low_quality_topic_details(details: str) -> bool:
+    compact = details.strip().lower()
+    generic_fragments = (
+        "тему обсуждали несколько раз",
+        "к ней возвращались по ходу дня",
+        "заметно влияла на общую повестку",
+        "тема заметно обсуждалась в течение дня",
+    )
+    if any(fragment in compact for fragment in generic_fragments):
+        return True
+    if len(compact) < 40:
+        return True
+    return False
 
 
 def _sanitize_text(text: str, *, limit: int) -> str:

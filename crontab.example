@@ -2,3 +2,5 @@
 40 20 * * * cd /opt/telegram-daily-summary-bot && /opt/telegram-daily-summary-bot/.venv/bin/python bot.py collect >> /opt/telegram-daily-summary-bot/logs/collect.log 2>&1
 45 20 * * * cd /opt/telegram-daily-summary-bot && /opt/telegram-daily-summary-bot/.venv/bin/python bot.py prepare >> /opt/telegram-daily-summary-bot/logs/prepare.log 2>&1
 0 21 * * * cd /opt/telegram-daily-summary-bot && /opt/telegram-daily-summary-bot/.venv/bin/python bot.py send >> /opt/telegram-daily-summary-bot/logs/send.log 2>&1
+10 21 * * * cd /opt/telegram-daily-summary-bot && /opt/telegram-daily-summary-bot/.venv/bin/python bot.py archive >> /opt/telegram-daily-summary-bot/logs/archive.log 2>&1
+15 21 * * * cd /opt/telegram-daily-summary-bot && /opt/telegram-daily-summary-bot/.venv/bin/python bot.py cleanup >> /opt/telegram-daily-summary-bot/logs/cleanup.log 2>&1

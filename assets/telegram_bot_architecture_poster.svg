@@ -1,0 +1,93 @@
+<svg width="1400" height="1400" viewBox="0 0 1400 1400" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f7f1e7"/>
+      <stop offset="100%" stop-color="#eef5fc"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5e6978"/>
+    </marker>
+  </defs>
+
+  <rect width="1400" height="1400" fill="url(#bg)"/>
+  <circle cx="180" cy="1180" r="220" fill="#dcecff" opacity="0.5"/>
+  <circle cx="1260" cy="130" r="160" fill="#f9e4d8" opacity="0.5"/>
+
+  <text x="92" y="96" font-family="Helvetica, Arial, sans-serif" font-size="38" font-weight="700" fill="#162032">
+    Telegram Daily Summary Bot
+  </text>
+  <text x="92" y="138" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#5b6a7d">
+    End-to-end workflow: collect, summarize, publish, archive, reset
+  </text>
+
+  <rect x="74" y="186" rx="30" ry="30" width="1252" height="980" fill="#ffffff" filter="url(#shadow)"/>
+
+  <rect x="118" y="228" rx="24" ry="24" width="1164" height="180" fill="#fff4cf" stroke="#d8b457" stroke-width="2"/>
+  <text x="152" y="274" font-family="Helvetica, Arial, sans-serif" font-size="18" font-weight="700" fill="#7a5b00">
+    1. INPUT FROM TELEGRAM
+  </text>
+  <rect x="152" y="300" rx="18" ry="18" width="300" height="76" fill="#ffffff" stroke="#ebd390"/>
+  <text x="176" y="330" font-family="Helvetica, Arial, sans-serif" font-size="27" font-weight="700" fill="#1d2939">Telegram Group</text>
+  <text x="176" y="357" font-family="Helvetica, Arial, sans-serif" font-size="17" fill="#58677a">Users send messages and commands to the bot</text>
+  <text x="520" y="332" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#4f5d70">Source of the daily conversation</text>
+  <text x="520" y="360" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#4f5d70">The bot only works with messages it has collected</text>
+
+  <rect x="118" y="438" rx="24" ry="24" width="1164" height="240" fill="#e2efff" stroke="#6998d8" stroke-width="2"/>
+  <text x="152" y="484" font-family="Helvetica, Arial, sans-serif" font-size="18" font-weight="700" fill="#2d609f">
+    2. COLLECTION LAYER
+  </text>
+  <rect x="152" y="510" rx="18" ry="18" width="272" height="120" fill="#ffffff" stroke="#9ec1eb"/>
+  <text x="178" y="548" font-family="Helvetica, Arial, sans-serif" font-size="29" font-weight="700" fill="#1d2939">Collect Job</text>
+  <text x="178" y="580" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#58677a">Runs hourly from 10:00 to 20:00</text>
+  <text x="178" y="606" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#58677a">Plus final collection at 20:40</text>
+
+  <rect x="530" y="510" rx="18" ry="18" width="272" height="120" fill="#ffffff" stroke="#9ec1eb"/>
+  <text x="556" y="548" font-family="Helvetica, Arial, sans-serif" font-size="29" font-weight="700" fill="#1d2939">bot.db</text>
+  <text x="556" y="580" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#58677a">Working storage for today's messages</text>
+  <text x="556" y="606" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#58677a">and prepared summary drafts</text>
+
+  <text x="876" y="548" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#4f5d70">Every run pulls only new updates from Telegram</text>
+  <text x="876" y="578" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#4f5d70">Messages accumulate through the day inside bot.db</text>
+  <text x="876" y="608" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#4f5d70">This creates a local buffer for evening summarization</text>
+
+  <line x1="424" y1="570" x2="530" y2="570" stroke="#5e6978" stroke-width="4" marker-end="url(#arrow)"/>
+
+  <rect x="118" y="708" rx="24" ry="24" width="1164" height="250" fill="#ffe8e4" stroke="#d98880" stroke-width="2"/>
+  <text x="152" y="754" font-family="Helvetica, Arial, sans-serif" font-size="18" font-weight="700" fill="#9c4d45">
+    3. SUMMARY GENERATION
+  </text>
+  <rect x="152" y="780" rx="18" ry="18" width="272" height="130" fill="#ffffff" stroke="#ebb0a8"/>
+  <text x="178" y="818" font-family="Helvetica, Arial, sans-serif" font-size="29" font-weight="700" fill="#1d2939">Prepare Job</text>
+  <text x="178" y="850" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#58677a">Runs at 20:45</text>
+  <text x="178" y="876" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#58677a">Builds the final daily summary</text>
+
+  <rect x="530" y="780" rx="18" ry="18" width="272" height="130" fill="#ffffff" stroke="#ebb0a8"/>
+  <text x="556" y="818" font-family="Helvetica, Arial, sans-serif" font-size="29" font-weight="700" fill="#1d2939">LLM Layer</text>
+  <text x="556" y="850" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#58677a">Qwen via Ollama at the moment</text>
+  <text x="556" y="876" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#58677a">Prompting, parsing, repair, fallback</text>
+
+  <text x="876" y="810" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#4f5d70">Output includes the main point, top discussion themes,</text>
+  <text x="876" y="840" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#4f5d70">and the most active member for the day.</text>
+  <text x="876" y="882" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#4f5d70">Bad model responses are filtered or repaired before publishing.</text>
+
+  <line x1="424" y1="845" x2="530" y2="845" stroke="#5e6978" stroke-width="4" marker-end="url(#arrow)"/>
+
+  <rect x="118" y="988" rx="24" ry="24" width="1164" height="140" fill="#ece6ff" stroke="#8b6bcd" stroke-width="2"/>
+  <text x="152" y="1034" font-family="Helvetica, Arial, sans-serif" font-size="18" font-weight="700" fill="#6c48ae">
+    4. DELIVERY, ARCHIVE, CLEANUP
+  </text>
+  <text x="152" y="1070" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#334155">21:00 Send summary back to Telegram group</text>
+  <text x="598" y="1070" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#334155">21:10 Copy the finished day into archive.db</text>
+  <text x="1030" y="1070" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#334155">21:15 Clean today's working data</text>
+
+  <text x="152" y="1100" font-family="Helvetica, Arial, sans-serif" font-size="17" fill="#5d6b7b">This keeps the live database lightweight while preserving history separately.</text>
+
+  <rect x="92" y="1210" rx="20" ry="20" width="1210" height="90" fill="#ffffff" opacity="0.96" stroke="#d5dde8"/>
+  <text x="122" y="1260" font-family="Helvetica, Arial, sans-serif" font-size="18" font-weight="700" fill="#223247">Business result:</text>
+  <text x="272" y="1260" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#223247">
+    a short evening digest for the group, plus archived daily history that does not interfere with the next day.
+  </text>
+</svg>
