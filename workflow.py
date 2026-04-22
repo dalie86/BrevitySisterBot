@@ -28,6 +28,7 @@ PREPARE_HOUR = int(os.getenv("PREPARE_HOUR", "20"))
 PREPARE_MINUTE = int(os.getenv("PREPARE_MINUTE", "45"))
 SEND_HOUR = int(os.getenv("SUMMARY_HOUR", "21"))
 SEND_MINUTE = int(os.getenv("SUMMARY_MINUTE", "0"))
+MIN_MESSAGES_FOR_SUMMARY = int(os.getenv("MIN_MESSAGES_FOR_SUMMARY", "15"))
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 MAX_SUMMARY_LENGTH = 2000
 STATE_LAST_UPDATE_ID = "last_update_id"
@@ -118,9 +119,32 @@ def build_summary_for_chat(
 ) -> str:
     current = now or now_msk()
     start, end = summary_window(current)
-    messages = storage.get_messages_between(chat_id=chat_id, start=start, end=end)
+    messages = get_summary_messages_for_chat(storage, chat_id=chat_id, now=current)
     return truncate_summary(
         build_summary(messages, chat_title=chat_title, start=start, end=end)
+    )
+
+
+def get_summary_messages_for_chat(
+    storage: Storage,
+    *,
+    chat_id: int,
+    now: Optional[datetime] = None,
+):
+    current = now or now_msk()
+    start, end = summary_window(current)
+    return storage.get_messages_between(chat_id=chat_id, start=start, end=end)
+
+
+def has_enough_messages_for_summary(
+    storage: Storage,
+    *,
+    chat_id: int,
+    now: Optional[datetime] = None,
+) -> bool:
+    return (
+        len(get_summary_messages_for_chat(storage, chat_id=chat_id, now=now))
+        >= MIN_MESSAGES_FOR_SUMMARY
     )
 
 

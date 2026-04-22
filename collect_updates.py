@@ -6,6 +6,7 @@ import logging
 from telegram import Bot, Update
 from telegram.constants import ChatType
 
+from message_formatting import format_summary_for_telegram
 from storage import Storage, StoredMessage
 from workflow import (
     BOT_TOKEN,
@@ -32,8 +33,8 @@ def _display_name(user) -> str:
     return "Unknown User"
 
 
-async def _reply(bot: Bot, chat_id: int, text: str) -> None:
-    await bot.send_message(chat_id=chat_id, text=text)
+async def _reply(bot: Bot, chat_id: int, text: str, *, parse_mode: str | None = None) -> None:
+    await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
 
 
 async def _handle_command(bot: Bot, storage: Storage, update: Update) -> bool:
@@ -82,7 +83,12 @@ async def _handle_command(bot: Bot, storage: Storage, update: Update) -> bool:
             chat_id=chat.id,
             chat_title=chat.title or str(chat.id),
         )
-        await _reply(bot, chat.id, summary)
+        await _reply(
+            bot,
+            chat.id,
+            format_summary_for_telegram(summary),
+            parse_mode="HTML",
+        )
         return True
 
     return False

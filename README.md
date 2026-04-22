@@ -66,7 +66,8 @@ cp .env.example .env
 - `PREPARE_MINUTE=45`
 - `SUMMARY_HOUR=21`
 - `SUMMARY_MINUTE=0`
-- `LLM_PROVIDER` - `ollama`, `yandex` или `gigachat`
+- `MIN_MESSAGES_FOR_SUMMARY=15` - если за день сообщений меньше этого порога, `prepare` не обращается к LLM, а `send` ничего не публикует
+- `LLM_PROVIDER=ollama`
 
 ### Вариант 0. Локальная модель через Ollama
 
@@ -85,31 +86,6 @@ cp .env.example .env
 Для отладки запросов к локальной модели смотри отдельный лог:
 
 - `logs/ollama.log`
-
-### Вариант 1. YandexGPT
-
-Минимально нужны:
-
-- `YANDEX_API_KEY`
-- `YANDEX_FOLDER_ID`
-
-Опционально:
-
-- `YANDEX_MODEL_URI`, например `gpt://<folder_id>/yandexgpt-lite/latest`
-- `YANDEX_API_URL`
-
-### Вариант 2. GigaChat
-
-Минимально нужен:
-
-- `GIGACHAT_AUTH_KEY`
-
-Опционально:
-
-- `GIGACHAT_MODEL`, по умолчанию `GigaChat-2-Lite`
-- `GIGACHAT_SCOPE`, по умолчанию `GIGACHAT_API_PERS`
-- `GIGACHAT_CA_BUNDLE_FILE`
-- `GIGACHAT_VERIFY_SSL_CERTS=false` только если понимаете риск
 
 ## Как это работает в группе
 
@@ -173,6 +149,7 @@ python3 bot.py collect
 - один запуск `collect` вычитывает всю доступную очередь `getUpdates`, а не только одну страницу;
 - регулярный сбор работает только в окне `10:00-20:59` по Москве;
 - саммари строится по сообщениям за текущие сутки до `20:40` по Москве;
+- если за день накопилось меньше `15` сообщений, подготовка саммари и публикация в чат пропускаются;
 - в `21:00` публикуется уже готовый текст из буфера.
 - в `21:10` данные дня копируются в `archive.db`;
 - в `21:15` рабочая база очищается от сегодняшних сообщений и сводки.

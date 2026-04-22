@@ -5,8 +5,9 @@ import logging
 
 from telegram import Bot
 
+from message_formatting import format_summary_for_telegram
 from storage import Storage
-from workflow import BOT_TOKEN, build_summary_for_chat, cleanup_old_data, now_msk, summary_date
+from workflow import BOT_TOKEN, cleanup_old_data, now_msk, summary_date
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,16 +27,19 @@ async def run() -> None:
 
     for chat in storage.get_enabled_chats():
         chat_id = int(chat["chat_id"])
-        chat_title = str(chat["title"])
         summary = storage.get_prepared_summary(chat_id=chat_id, summary_date=today)
         if not summary:
-            summary = build_summary_for_chat(
-                storage,
-                chat_id=chat_id,
-                chat_title=chat_title,
-                now=now,
+            logger.info(
+                "Skipping send for chat %s: no prepared summary for %s.",
+                chat_id,
+                today,
             )
-        await bot.send_message(chat_id=chat_id, text=summary)
+            continue
+        await bot.send_message(
+            chat_id=chat_id,
+            text=format_summary_for_telegram(summary),
+            parse_mode="HTML",
+        )
         logger.info("Sent summary to chat %s", chat_id)
 
     cleanup_old_data(storage, now)

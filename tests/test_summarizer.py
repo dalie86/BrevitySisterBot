@@ -12,8 +12,10 @@ class SummarizerTests(unittest.TestCase):
         mock_request_summary_json.return_value = (
             '{"headline":"Команда согласовала релиз и обсудила баги в оплате.",'
             '"topics":['
-            '{"title":"Релиз","details":"Согласовали сроки; сверили чеклист; подтвердили готовность."},'
-            '{"title":"Оплата","details":"Проверили баг; обсудили логи; определили следующий шаг."}'
+            '{"title":"Релиз","details":"Согласовали сроки; сверили чеклист; подтвердили готовность; финальное окно осталось вечерним."},'
+            '{"title":"Оплата","details":"Проверили баг; обсудили логи; нашли причину; определили следующий шаг."},'
+            '{"title":"Коммуникация","details":"Сверили роли; уточнили ответственных; сняли часть вопросов; оставили контрольный созвон."},'
+            '{"title":"Риски","details":"Проверили хвосты; обсудили блокеры; оценили влияние; договорились наблюдать после релиза."}'
             ']}'
         )
         messages = [
@@ -55,11 +57,17 @@ class SummarizerTests(unittest.TestCase):
 
         self.assertTrue(summary.startswith("самое главное за сегодня в сводке новостей:"))
         self.assertIn("- самое главное", summary.replace("- главное", "- самое главное"))
-        self.assertIn("- Релиз: Согласовали сроки; сверили чеклист; подтвердили готовность", summary)
-        self.assertIn("- Оплата: Проверили баг; обсудили логи; определили следующий шаг", summary)
+        self.assertIn("- Релиз: Согласовали сроки; сверили чеклист; подтвердили готовность; финальное окно осталось вечерним", summary)
+        self.assertIn("- Оплата: Проверили баг; обсудили логи; нашли причину; определили следующий шаг", summary)
         self.assertIn("- самый активный участник сегодня - @bob", summary)
         self.assertIn("Возьми поминальный набор с полочки", summary)
         self.assertLessEqual(len(summary), 1200)
+
+        system_prompt, user_prompt = mock_request_summary_json.call_args.args
+        self.assertIn("topics: 4 темы", system_prompt)
+        self.assertIn("ровно 4 коротких тезиса", system_prompt)
+        self.assertIn("Старайся вернуть именно 4 темы", user_prompt)
+        self.assertIn("ровно 4 конкретных тезиса по сути", user_prompt)
 
     @patch("summarizer.request_summary_json")
     def test_build_summary_accepts_old_string_topic_format(self, mock_request_summary_json) -> None:
@@ -101,7 +109,9 @@ class SummarizerTests(unittest.TestCase):
                 '{"headline":"Есть неясность по планам и подготовке.",'
                 '"topics":['
                 '{"title":"Подготовка","details":"неясны даты и место; участники ждут конкретику; нужно больше практики; есть открытые вопросы"},'
-                '{"title":"Логистика","details":"обсуждаются условия; участники ждут ясности; тема влияет на планы; решения пока нет"}'
+                '{"title":"Логистика","details":"обсуждаются условия; участники ждут ясности; тема влияет на планы; решения пока нет"},'
+                '{"title":"Риски","details":"есть опасения по готовности; часть вопросов не закрыта; обсуждение влияет на решение; нужна ясность по следующему шагу"},'
+                '{"title":"Сроки","details":"непонятны даты старта; участникам сложно планировать; вопрос возвращается снова; точного ответа пока нет"}'
                 ']}'
             ),
         ]
@@ -137,6 +147,11 @@ class SummarizerTests(unittest.TestCase):
         self.assertIn("- Логистика:", summary)
         self.assertEqual(mock_request_summary_json.call_count, 2)
         self.assertLessEqual(len(summary), 1200)
+
+        repair_system_prompt, repair_user_prompt = mock_request_summary_json.call_args_list[1].args
+        self.assertIn("Старайся вернуть именно 4 темы", repair_system_prompt)
+        self.assertIn("ровно 4 коротких тезиса", repair_system_prompt)
+        self.assertIn("Исходный ответ модели", repair_user_prompt)
 
     @patch("summarizer.request_summary_json")
     def test_build_summary_falls_back_without_llm_and_stays_short(self, mock_request_summary_json) -> None:
