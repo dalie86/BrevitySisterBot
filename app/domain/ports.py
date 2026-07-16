@@ -3,7 +3,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Protocol, Sequence
 
-from app.domain.models import GeneratedSummary, LlmResult, QueuedUpdate, StoredMessage
+from app.domain.models import (
+    GeneratedSummary,
+    LlmResult,
+    QueuedUpdate,
+    StoredMessage,
+    SummaryKind,
+)
 
 
 class Clock(Protocol):
@@ -91,6 +97,17 @@ class SummarySelectionRepository(Protocol):
 
 class SummaryRepository(Protocol):
     def find_by_source_hash(self, chat_id: int, source_hash: str) -> str | None:
+        raise NotImplementedError
+
+    def begin_generation(
+        self,
+        chat_id: int,
+        summary_date: str,
+        kind: SummaryKind,
+        source_hash: str,
+        requester_user_id: int | None,
+        now: datetime,
+    ) -> bool:
         raise NotImplementedError
 
     def save(

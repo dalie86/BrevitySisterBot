@@ -47,6 +47,12 @@ class OnDemandSummaryService:
             requester_user_id,
             self.now(),
         )
+        if result.outcome == "preparing":
+            self.telegram.send_message(
+                destination_chat_id,
+                "Сводка по этим сообщениям уже готовится. Повторять запрос не нужно.",
+            )
+            return
         if result.outcome == "insufficient_messages":
             self.telegram.send_message(
                 destination_chat_id,

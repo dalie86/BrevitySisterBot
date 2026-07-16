@@ -32,9 +32,17 @@ class FakeSummaries:
     def __init__(self) -> None:
         self.items = {}
         self.saved = []
+        self.active = set()
 
     def find_by_source_hash(self, chat_id, source_hash):
         return self.items.get((chat_id, source_hash))
+
+    def begin_generation(self, chat_id, summary_date, kind, source_hash, requester_user_id, now):
+        key = (chat_id, kind, source_hash)
+        if key in self.active:
+            return False
+        self.active.add(key)
+        return True
 
     def save(self, summary, requester_user_id, now):
         self.saved.append((summary, requester_user_id, now))
@@ -129,3 +137,23 @@ def test_invalid_json_gets_one_repair_attempt_then_fallback() -> None:
     assert result.fallback_type is None
     assert "Исправлено" in result.text
     assert llm.call_count == 2
+
+
+def test_active_generation_is_not_sent_to_llm_twice() -> None:
+    service, llm, summaries = make_service(5)
+    messages = service.messages.list_between(
+        -1001,
+        datetime(2026, 7, 15, tzinfo=timezone.utc),
+        datetime(2026, 7, 17, tzinfo=timezone.utc),
+    )
+    from app.domain.models import build_source_hash
+
+    source_hash = build_source_hash(
+        (item.telegram_message_id, item.text, item.sent_at) for item in messages
+    )
+    summaries.active.add((-1001, SummaryKind.ON_DEMAND, source_hash))
+
+    result = service.generate(-1001, SummaryKind.ON_DEMAND, 42, NOW)
+
+    assert result.outcome == "preparing"
+    assert llm.call_count == 0

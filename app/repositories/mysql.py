@@ -453,6 +453,64 @@ class MySqlSummaryRepository:
             row = cursor.fetchone()
             return str(row["summary_text"]) if row else None
 
+    def begin_generation(
+        self,
+        chat_id: int,
+        summary_date: str,
+        kind: Any,
+        source_hash: str,
+        requester_user_id: int | None,
+        now: datetime,
+    ) -> bool:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            db_now = _to_mysql_datetime(now)
+            kind_value = str(getattr(kind, "value", kind))
+            cursor.execute(
+                """
+                INSERT IGNORE INTO prepared_summaries (
+                    chat_id, summary_date, summary_kind, requester_user_id,
+                    source_hash, status, created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, 'preparing', %s, %s)
+                """,
+                (
+                    chat_id,
+                    summary_date,
+                    kind_value,
+                    requester_user_id,
+                    source_hash,
+                    db_now,
+                    db_now,
+                ),
+            )
+            if cursor.rowcount == 1:
+                connection.commit()
+                return True
+            cursor.execute(
+                """
+                UPDATE prepared_summaries
+                SET requester_user_id = %s, updated_at = %s
+                WHERE chat_id = %s
+                  AND summary_date = %s
+                  AND summary_kind = %s
+                  AND source_hash = %s
+                  AND status = 'preparing'
+                  AND updated_at < %s
+                """,
+                (
+                    requester_user_id,
+                    db_now,
+                    chat_id,
+                    summary_date,
+                    kind_value,
+                    source_hash,
+                    db_now - timedelta(minutes=5),
+                ),
+            )
+            acquired = cursor.rowcount == 1
+            connection.commit()
+            return acquired
+
     def save(
         self,
         summary: GeneratedSummary,

@@ -93,6 +93,26 @@ class SummaryService:
                 message_count=len(messages),
             )
 
+        acquired = self.summaries.begin_generation(
+            chat_id,
+            local_now.date().isoformat(),
+            kind,
+            source_hash,
+            requester_user_id,
+            now,
+        )
+        if not acquired:
+            return GeneratedSummary(
+                chat_id=chat_id,
+                summary_date=local_now.date().isoformat(),
+                kind=kind,
+                source_hash=source_hash,
+                text="",
+                status=SummaryStatus.PREPARING,
+                outcome="preparing",
+                message_count=len(messages),
+            )
+
         provider = None
         model = None
         fallback_type = None
