@@ -914,6 +914,21 @@ class MySqlLifecycleStore:
                 (summary_date,),
             )
             deleted = int(cursor.rowcount)
+            cursor.execute(
+                """
+                DELETE summaries
+                FROM prepared_summaries AS summaries
+                JOIN archived_summaries AS archived
+                  ON archived.source_summary_id = summaries.id
+                JOIN daily_lifecycle AS lifecycle
+                  ON lifecycle.chat_id = summaries.chat_id
+                 AND lifecycle.summary_date = summaries.summary_date
+                WHERE summaries.summary_date = %s
+                  AND lifecycle.archive_verified = 1
+                  AND lifecycle.archive_completed_at IS NOT NULL
+                """,
+                (summary_date,),
+            )
             db_now = _to_mysql_datetime(now)
             cursor.execute(
                 """
@@ -1038,6 +1053,21 @@ class MySqlMaintenanceStore:
             db_now = _to_mysql_datetime(now)
             cutoff = db_now - timedelta(days=retention_days)
             statements = {
+                "prepared_summaries": (
+                    """
+                    DELETE summaries
+                    FROM prepared_summaries AS summaries
+                    WHERE summaries.summary_date < %s
+                      AND (
+                        summaries.status = 'sent'
+                        OR EXISTS (
+                            SELECT 1 FROM archived_summaries AS archived
+                            WHERE archived.source_summary_id = summaries.id
+                        )
+                      )
+                    """,
+                    (cutoff.date(),),
+                ),
                 "archived_messages": (
                     "DELETE FROM archived_messages WHERE expires_at < %s",
                     (db_now,),
@@ -1054,6 +1084,22 @@ class MySqlMaintenanceStore:
                     """
                     DELETE FROM telegram_updates
                     WHERE status IN ('completed', 'failed') AND updated_at < %s
+                    """,
+                    (cutoff,),
+                ),
+                "scheduled_publications": (
+                    """
+                    DELETE FROM scheduled_publications
+                    WHERE status = 'sent' AND updated_at < %s
+                    """,
+                    (cutoff,),
+                ),
+                "daily_lifecycle": (
+                    """
+                    DELETE FROM daily_lifecycle
+                    WHERE archive_verified = 1
+                      AND working_cleanup_completed_at IS NOT NULL
+                      AND updated_at < %s
                     """,
                     (cutoff,),
                 ),

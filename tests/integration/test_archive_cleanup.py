@@ -14,8 +14,10 @@ def test_cleanup_deletes_only_rows_joined_to_verified_archive() -> None:
     )
 
     delete_sql = connection.cursor_instance.executions[0][0]
+    summary_delete_sql = connection.cursor_instance.executions[1][0]
     assert deleted == 5
     assert "JOIN archived_messages" in delete_sql
     assert "lifecycle.archive_verified = 1" in delete_sql
+    assert "JOIN archived_summaries" in summary_delete_sql
     assert connection.commits == 1
     assert connection.closed is True
