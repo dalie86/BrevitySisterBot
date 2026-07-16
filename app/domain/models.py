@@ -72,6 +72,7 @@ class GeneratedSummary:
     model: str | None = None
     fallback_type: str | None = None
     outcome: str = "generated"
+    message_count: int = 0
 
 
 def build_source_hash(

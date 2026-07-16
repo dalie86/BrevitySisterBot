@@ -42,8 +42,18 @@ class UpdateService:
         update = self.updates.claim(update_id, now, self.lease_seconds)
         if update is None:
             return False
+        return self._process_claimed(update.update_id, update.payload, now)
+
+    def recover(self, now: datetime, limit: int = 100) -> int:
+        processed = 0
+        for update in self.updates.claim_available(now, limit):
+            if self._process_claimed(update.update_id, update.payload, now):
+                processed += 1
+        return processed
+
+    def _process_claimed(self, update_id: int, payload: dict, now: datetime) -> bool:
         try:
-            self.handler(update.payload)
+            self.handler(payload)
         except Exception as exc:
             self.updates.retry(
                 update_id,

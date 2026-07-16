@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+import uuid
 from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pymysql
 from pymysql.connections import Connection
@@ -268,23 +270,23 @@ class MySqlMessageRepository:
         with _managed_connection(self.connection_factory) as connection:
             cursor = connection.cursor()
             cursor.execute(
-            """
+                """
             INSERT IGNORE INTO messages (
                 chat_id, telegram_message_id, user_id, username,
                 full_name, text, sent_at, created_at
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (
-                message.chat_id,
-                message.telegram_message_id,
-                message.user_id,
-                message.username,
-                message.full_name,
-                message.text,
-                message.sent_at.astimezone(timezone.utc).replace(tzinfo=None),
-                datetime.now(timezone.utc).replace(tzinfo=None),
-            ),
-        )
+                (
+                    message.chat_id,
+                    message.telegram_message_id,
+                    message.user_id,
+                    message.username,
+                    message.full_name,
+                    message.text,
+                    message.sent_at.astimezone(timezone.utc).replace(tzinfo=None),
+                    datetime.now(timezone.utc).replace(tzinfo=None),
+                ),
+            )
             connection.commit()
             return cursor.rowcount == 1
 
@@ -297,7 +299,7 @@ class MySqlMessageRepository:
         with _managed_connection(self.connection_factory) as connection:
             cursor = connection.cursor()
             cursor.execute(
-            """
+                """
             SELECT telegram_message_id, chat_id, user_id, username, full_name, text, sent_at
             FROM messages
             WHERE chat_id = %s
@@ -305,8 +307,8 @@ class MySqlMessageRepository:
               AND sent_at < %s
             ORDER BY sent_at, telegram_message_id
             """,
-            (chat_id, _to_mysql_datetime(start), _to_mysql_datetime(end)),
-        )
+                (chat_id, _to_mysql_datetime(start), _to_mysql_datetime(end)),
+            )
             rows = cursor.fetchall()
         return [
             StoredMessage(
@@ -331,7 +333,7 @@ class MySqlTrackedChatRepository:
             cursor = connection.cursor()
             db_now = _to_mysql_datetime(now)
             cursor.execute(
-            """
+                """
             INSERT INTO tracked_chats (
                 chat_id, title, enabled, timezone, scheduled_publish_time,
                 created_at, updated_at
@@ -341,21 +343,21 @@ class MySqlTrackedChatRepository:
                 enabled = 1,
                 updated_at = VALUES(updated_at)
             """,
-            (chat_id, title, db_now, db_now),
-        )
+                (chat_id, title, db_now, db_now),
+            )
             connection.commit()
 
     def disable(self, chat_id: int, now: datetime) -> None:
         with _managed_connection(self.connection_factory) as connection:
             cursor = connection.cursor()
             cursor.execute(
-            """
+                """
             UPDATE tracked_chats
             SET enabled = 0, updated_at = %s
             WHERE chat_id = %s
             """,
-            (_to_mysql_datetime(now), chat_id),
-        )
+                (_to_mysql_datetime(now), chat_id),
+            )
             connection.commit()
 
     def is_tracked(self, chat_id: int) -> bool:
@@ -384,7 +386,7 @@ class MySqlMemberRepository:
             cursor = connection.cursor()
             db_now = _to_mysql_datetime(now)
             cursor.execute(
-            """
+                """
             INSERT INTO chat_members (
                 chat_id, user_id, username, full_name, first_seen_at, last_seen_at
             ) VALUES (%s, %s, %s, %s, %s, %s)
@@ -393,22 +395,38 @@ class MySqlMemberRepository:
                 full_name = VALUES(full_name),
                 last_seen_at = VALUES(last_seen_at)
             """,
-            (chat_id, user_id, username, full_name, db_now, db_now),
-        )
+                (chat_id, user_id, username, full_name, db_now, db_now),
+            )
             connection.commit()
 
     def confirm_summary_link(self, chat_id: int, user_id: int, now: datetime) -> None:
         with _managed_connection(self.connection_factory) as connection:
             cursor = connection.cursor()
             cursor.execute(
-            """
+                """
             UPDATE chat_members
             SET summary_linked_at = %s
             WHERE chat_id = %s AND user_id = %s
             """,
-            (_to_mysql_datetime(now), chat_id, user_id),
-        )
+                (_to_mysql_datetime(now), chat_id, user_id),
+            )
             connection.commit()
+
+    def linked_groups(self, user_id: int) -> list[tuple[int, str]]:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT members.chat_id, chats.title
+                FROM chat_members AS members
+                JOIN tracked_chats AS chats ON chats.chat_id = members.chat_id
+                WHERE members.user_id = %s
+                  AND members.summary_linked_at IS NOT NULL
+                ORDER BY chats.title, members.chat_id
+                """,
+                (user_id,),
+            )
+            return [(int(row["chat_id"]), str(row["title"])) for row in cursor.fetchall()]
 
 
 class MySqlSummaryRepository:
@@ -482,25 +500,6 @@ class MySqlSummaryRepository:
             )
             connection.commit()
 
-    def linked_groups(self, user_id: int) -> list[tuple[int, str]]:
-        with _managed_connection(self.connection_factory) as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                """
-                SELECT members.chat_id, chats.title
-                FROM chat_members AS members
-                JOIN tracked_chats AS chats ON chats.chat_id = members.chat_id
-                WHERE members.user_id = %s
-                  AND members.summary_linked_at IS NOT NULL
-                ORDER BY chats.title, members.chat_id
-                """,
-                (user_id,),
-            )
-            return [
-                (int(row["chat_id"]), str(row["title"]))
-                for row in cursor.fetchall()
-            ]
-
 
 class MySqlSummarySelectionRepository:
     def __init__(self, connection_factory: ConnectionFactory) -> None:
@@ -539,6 +538,432 @@ class MySqlSummarySelectionRepository:
             return int(row["chat_id"]) if row else None
 
 
+class MySqlLifecycleStore:
+    def __init__(
+        self,
+        connection_factory: ConnectionFactory,
+        timezone_name: str = "Europe/Moscow",
+    ) -> None:
+        self.connection_factory = connection_factory
+        self.timezone = ZoneInfo(timezone_name)
+
+    def enabled_chats(self) -> list[tuple[int, str]]:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                "SELECT chat_id, title FROM tracked_chats WHERE enabled = 1 ORDER BY chat_id"
+            )
+            return [(int(row["chat_id"]), str(row["title"])) for row in cursor.fetchall()]
+
+    def record_skipped(
+        self,
+        chat_id: int,
+        summary_date: str,
+        message_count: int,
+        now: datetime,
+    ) -> None:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            db_now = _to_mysql_datetime(now)
+            cursor.execute(
+                """
+                INSERT INTO daily_lifecycle (
+                    chat_id, summary_date, source_message_count,
+                    automatic_outcome, created_at, updated_at
+                ) VALUES (%s, %s, %s, 'automatic_summary_skipped', %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    source_message_count = VALUES(source_message_count),
+                    automatic_outcome = VALUES(automatic_outcome),
+                    updated_at = VALUES(updated_at)
+                """,
+                (chat_id, summary_date, message_count, db_now, db_now),
+            )
+            connection.commit()
+
+    def enqueue_publication(
+        self,
+        chat_id: int,
+        summary_date: str,
+        source_hash: str,
+        now: datetime,
+    ) -> None:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            db_now = _to_mysql_datetime(now)
+            cursor.execute(
+                """
+                INSERT IGNORE INTO scheduled_publications (
+                    chat_id, summary_date, prepared_summary_id, status,
+                    attempt_count, available_at, created_at, updated_at
+                )
+                SELECT chat_id, summary_date, id, 'pending', 0, %s, %s, %s
+                FROM prepared_summaries
+                WHERE chat_id = %s
+                  AND summary_date = %s
+                  AND summary_kind = 'scheduled'
+                  AND source_hash = %s
+                  AND status = 'prepared'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (db_now, db_now, db_now, chat_id, summary_date, source_hash),
+            )
+            if cursor.rowcount != 1:
+                cursor.execute(
+                    """
+                    SELECT 1 AS exists_flag FROM scheduled_publications
+                    WHERE chat_id = %s AND summary_date = %s
+                    """,
+                    (chat_id, summary_date),
+                )
+                if cursor.fetchone() is None:
+                    raise RuntimeError("Prepared summary was not found for publication")
+            cursor.execute(
+                """
+                INSERT INTO daily_lifecycle (
+                    chat_id, summary_date, automatic_outcome,
+                    summary_prepared_at, created_at, updated_at
+                ) VALUES (%s, %s, 'summary_prepared', %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    automatic_outcome = VALUES(automatic_outcome),
+                    summary_prepared_at = VALUES(summary_prepared_at),
+                    updated_at = VALUES(updated_at)
+                """,
+                (chat_id, summary_date, db_now, db_now, db_now),
+            )
+            connection.commit()
+
+    def claim_publications(
+        self,
+        summary_date: str,
+        now: datetime,
+        limit: int,
+    ) -> list[tuple[int, int, str]]:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            db_now = _to_mysql_datetime(now)
+            stale_before = db_now - timedelta(minutes=5)
+            cursor.execute(
+                """
+                SELECT id
+                FROM scheduled_publications
+                WHERE summary_date = %s
+                  AND available_at <= %s
+                  AND (
+                    status IN ('pending', 'retry')
+                    OR (status = 'sending' AND claimed_at < %s)
+                  )
+                ORDER BY id
+                LIMIT %s
+                """,
+                (summary_date, db_now, stale_before, limit),
+            )
+            ids = [int(row["id"]) for row in cursor.fetchall()]
+            claimed: list[tuple[int, int, str]] = []
+            for publication_id in ids:
+                cursor.execute(
+                    """
+                    UPDATE scheduled_publications
+                    SET status = 'sending',
+                        attempt_count = attempt_count + 1,
+                        claimed_at = %s,
+                        updated_at = %s
+                    WHERE id = %s
+                      AND (
+                        status IN ('pending', 'retry')
+                        OR (status = 'sending' AND claimed_at < %s)
+                      )
+                    """,
+                    (db_now, db_now, publication_id, stale_before),
+                )
+                if cursor.rowcount != 1:
+                    continue
+                cursor.execute(
+                    """
+                    SELECT publications.id, publications.chat_id, summaries.summary_text
+                    FROM scheduled_publications AS publications
+                    JOIN prepared_summaries AS summaries
+                      ON summaries.id = publications.prepared_summary_id
+                    WHERE publications.id = %s
+                    """,
+                    (publication_id,),
+                )
+                row = cursor.fetchone()
+                if row and row["summary_text"]:
+                    claimed.append((int(row["id"]), int(row["chat_id"]), str(row["summary_text"])))
+            connection.commit()
+            return claimed
+
+    def mark_publication_sent(
+        self,
+        publication_id: int,
+        telegram_message_id: int,
+        now: datetime,
+    ) -> None:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            db_now = _to_mysql_datetime(now)
+            cursor.execute(
+                """
+                UPDATE scheduled_publications
+                SET status = 'sent', telegram_message_id = %s,
+                    sent_at = %s, claimed_at = NULL, updated_at = %s
+                WHERE id = %s AND status = 'sending'
+                """,
+                (telegram_message_id, db_now, db_now, publication_id),
+            )
+            cursor.execute(
+                """
+                UPDATE prepared_summaries AS summaries
+                JOIN scheduled_publications AS publications
+                  ON publications.prepared_summary_id = summaries.id
+                SET summaries.status = 'sent',
+                    summaries.sent_at = %s,
+                    summaries.updated_at = %s
+                WHERE publications.id = %s
+                """,
+                (db_now, db_now, publication_id),
+            )
+            cursor.execute(
+                """
+                UPDATE daily_lifecycle AS lifecycle
+                JOIN scheduled_publications AS publications
+                  ON publications.chat_id = lifecycle.chat_id
+                 AND publications.summary_date = lifecycle.summary_date
+                SET lifecycle.summary_sent_at = %s,
+                    lifecycle.automatic_outcome = 'summary_sent',
+                    lifecycle.updated_at = %s
+                WHERE publications.id = %s
+                """,
+                (db_now, db_now, publication_id),
+            )
+            connection.commit()
+
+    def mark_publication_retry(
+        self,
+        publication_id: int,
+        now: datetime,
+        error: str,
+    ) -> None:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            db_now = _to_mysql_datetime(now)
+            cursor.execute(
+                """
+                UPDATE scheduled_publications
+                SET status = 'retry', available_at = %s, claimed_at = NULL,
+                    last_error_message = %s, updated_at = %s
+                WHERE id = %s
+                """,
+                (db_now + timedelta(minutes=5), error[:1000], db_now, publication_id),
+            )
+            connection.commit()
+
+    def archive_day(self, summary_date: str, now: datetime, retention_days: int) -> int:
+        start, end = self._utc_day_bounds(summary_date)
+        connection = self.connection_factory()
+        try:
+            cursor = connection.cursor()
+            db_now = _to_mysql_datetime(now)
+            expires_at = db_now + timedelta(days=retention_days)
+            cursor.execute(
+                """
+                INSERT IGNORE INTO archived_messages (
+                    chat_id, telegram_message_id, user_id, username, full_name,
+                    text, sent_at, archived_date, archived_at, expires_at
+                )
+                SELECT chat_id, telegram_message_id, user_id, username, full_name,
+                       text, sent_at, %s, %s, %s
+                FROM messages
+                WHERE sent_at >= %s AND sent_at < %s
+                """,
+                (summary_date, db_now, expires_at, start, end),
+            )
+            expected = self._counts_for_working(cursor, start, end)
+            archived = self._counts_for_archive(cursor, summary_date)
+            if expected != {chat_id: archived.get(chat_id, 0) for chat_id in expected}:
+                raise RuntimeError("Archive verification count mismatch")
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS missing_count
+                FROM messages AS messages
+                LEFT JOIN archived_messages AS archived
+                  ON archived.chat_id = messages.chat_id
+                 AND archived.telegram_message_id = messages.telegram_message_id
+                WHERE messages.sent_at >= %s
+                  AND messages.sent_at < %s
+                  AND archived.id IS NULL
+                """,
+                (start, end),
+            )
+            if int(cursor.fetchone()["missing_count"]) != 0:
+                raise RuntimeError("Archive verification identity mismatch")
+            cursor.execute(
+                """
+                INSERT IGNORE INTO archived_summaries (
+                    source_summary_id, chat_id, summary_date, summary_kind,
+                    summary_text, provider, model, fallback_type,
+                    prepared_at, sent_at, archived_at, expires_at
+                )
+                SELECT id, chat_id, summary_date, summary_kind, summary_text,
+                       provider, model, fallback_type, prepared_at, sent_at, %s, %s
+                FROM prepared_summaries
+                WHERE summary_date = %s
+                  AND summary_text IS NOT NULL
+                  AND summary_text <> ''
+                """,
+                (db_now, expires_at, summary_date),
+            )
+            for chat_id, count in expected.items():
+                self._mark_archive_verified(
+                    cursor,
+                    chat_id,
+                    summary_date,
+                    count,
+                    db_now,
+                )
+            connection.commit()
+            return sum(expected.values())
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def cleanup_verified(self, summary_date: str, now: datetime) -> int:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                DELETE messages
+                FROM messages
+                JOIN archived_messages AS archived
+                  ON archived.chat_id = messages.chat_id
+                 AND archived.telegram_message_id = messages.telegram_message_id
+                JOIN daily_lifecycle AS lifecycle
+                  ON lifecycle.chat_id = messages.chat_id
+                 AND lifecycle.summary_date = archived.archived_date
+                WHERE archived.archived_date = %s
+                  AND lifecycle.archive_verified = 1
+                  AND lifecycle.archive_completed_at IS NOT NULL
+                """,
+                (summary_date,),
+            )
+            deleted = int(cursor.rowcount)
+            db_now = _to_mysql_datetime(now)
+            cursor.execute(
+                """
+                UPDATE daily_lifecycle
+                SET working_cleanup_completed_at = %s, updated_at = %s
+                WHERE summary_date = %s
+                  AND archive_verified = 1
+                  AND archive_completed_at IS NOT NULL
+                """,
+                (db_now, db_now, summary_date),
+            )
+            connection.commit()
+            return deleted
+
+    def _utc_day_bounds(self, summary_date: str) -> tuple[datetime, datetime]:
+        local_start = datetime.fromisoformat(summary_date).replace(tzinfo=self.timezone)
+        local_end = local_start + timedelta(days=1)
+        return (
+            local_start.astimezone(timezone.utc).replace(tzinfo=None),
+            local_end.astimezone(timezone.utc).replace(tzinfo=None),
+        )
+
+    @staticmethod
+    def _counts_for_working(cursor: Any, start: datetime, end: datetime) -> dict[int, int]:
+        cursor.execute(
+            """
+            SELECT chat_id, COUNT(*) AS item_count
+            FROM messages
+            WHERE sent_at >= %s AND sent_at < %s
+            GROUP BY chat_id
+            """,
+            (start, end),
+        )
+        return {int(row["chat_id"]): int(row["item_count"]) for row in cursor.fetchall()}
+
+    @staticmethod
+    def _counts_for_archive(cursor: Any, summary_date: str) -> dict[int, int]:
+        cursor.execute(
+            """
+            SELECT chat_id, COUNT(*) AS item_count
+            FROM archived_messages
+            WHERE archived_date = %s
+            GROUP BY chat_id
+            """,
+            (summary_date,),
+        )
+        return {int(row["chat_id"]): int(row["item_count"]) for row in cursor.fetchall()}
+
+    @staticmethod
+    def _mark_archive_verified(
+        cursor: Any,
+        chat_id: int,
+        summary_date: str,
+        count: int,
+        now: datetime,
+    ) -> None:
+        cursor.execute(
+            """
+            INSERT INTO daily_lifecycle (
+                chat_id, summary_date, source_message_count,
+                archive_completed_at, archived_message_count,
+                archive_verified, created_at, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, 1, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                source_message_count = VALUES(source_message_count),
+                archive_completed_at = VALUES(archive_completed_at),
+                archived_message_count = VALUES(archived_message_count),
+                archive_verified = 1,
+                updated_at = VALUES(updated_at)
+            """,
+            (chat_id, summary_date, count, now, count, now, now),
+        )
+
+
+class MySqlJobLockRepository:
+    def __init__(self, connection_factory: ConnectionFactory) -> None:
+        self.connection_factory = connection_factory
+
+    def acquire(self, lock_name: str, now: datetime, lease_seconds: int = 600) -> str | None:
+        owner_token = str(uuid.uuid4())
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            db_now = _to_mysql_datetime(now)
+            cursor.execute(
+                "DELETE FROM job_locks WHERE lock_name = %s AND expires_at < %s",
+                (lock_name, db_now),
+            )
+            cursor.execute(
+                """
+                INSERT IGNORE INTO job_locks (
+                    lock_name, owner_token, acquired_at, expires_at
+                ) VALUES (%s, %s, %s, %s)
+                """,
+                (
+                    lock_name,
+                    owner_token,
+                    db_now,
+                    db_now + timedelta(seconds=lease_seconds),
+                ),
+            )
+            acquired = cursor.rowcount == 1
+            connection.commit()
+            return owner_token if acquired else None
+
+    def release(self, lock_name: str, owner_token: str) -> None:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                "DELETE FROM job_locks WHERE lock_name = %s AND owner_token = %s",
+                (lock_name, owner_token),
+            )
+            connection.commit()
+
+
 def _split_sql_statements(sql: str) -> list[str]:
     return [statement.strip() for statement in sql.split(";") if statement.strip()]
 
@@ -565,8 +990,6 @@ def _queued_update_from_row(row: dict[str, Any]) -> QueuedUpdate:
         attempt_count=int(row["attempt_count"]),
         available_at=_from_mysql_datetime(row["available_at"]),
         claimed_at=(
-            _from_mysql_datetime(row["claimed_at"])
-            if row.get("claimed_at") is not None
-            else None
+            _from_mysql_datetime(row["claimed_at"]) if row.get("claimed_at") is not None else None
         ),
     )

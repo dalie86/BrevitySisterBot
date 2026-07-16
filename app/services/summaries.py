@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any, Sequence
 from zoneinfo import ZoneInfo
 
@@ -52,7 +52,7 @@ class SummaryService:
     ) -> GeneratedSummary:
         local_now = now.astimezone(self.timezone)
         local_start = datetime.combine(local_now.date(), time.min, self.timezone)
-        local_end = datetime.combine(local_now.date(), time.max, self.timezone)
+        local_end = local_start + timedelta(days=1)
         messages = list(
             self.messages.list_between(
                 chat_id,
@@ -77,6 +77,7 @@ class SummaryService:
                 text="",
                 status=SummaryStatus.FAILED,
                 outcome="insufficient_messages",
+                message_count=len(messages),
             )
 
         cached = self.summaries.find_by_source_hash(chat_id, source_hash)
@@ -89,6 +90,7 @@ class SummaryService:
                 text=cached,
                 status=SummaryStatus.PREPARED,
                 outcome="cached",
+                message_count=len(messages),
             )
 
         provider = None
@@ -127,6 +129,7 @@ class SummaryService:
             provider=provider,
             model=model,
             fallback_type=fallback_type,
+            message_count=len(messages),
         )
         self.summaries.save(summary, requester_user_id, now)
         return summary

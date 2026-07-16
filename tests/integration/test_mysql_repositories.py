@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from app.domain.models import StoredMessage
 from app.repositories.mysql import (
+    MySqlMemberRepository,
     MySqlMessageRepository,
     MySqlUpdateRepository,
 )
@@ -142,4 +143,20 @@ def test_list_between_converts_mysql_rows_to_messages() -> None:
     assert messages[0].telegram_message_id == 7
     assert messages[0].sent_at.tzinfo == timezone.utc
     assert "ORDER BY sent_at" in connection.cursor_instance.executions[0][0]
+    assert connection.closed is True
+
+
+def test_member_repository_returns_linked_groups() -> None:
+    connection = RecordingConnection(
+        fetchall_result=[
+            {"chat_id": -1001, "title": "Group 1"},
+            {"chat_id": -1002, "title": "Group 2"},
+        ]
+    )
+    repository = MySqlMemberRepository(lambda: connection)
+
+    groups = repository.linked_groups(42)
+
+    assert groups == [(-1001, "Group 1"), (-1002, "Group 2")]
+    assert "summary_linked_at IS NOT NULL" in connection.cursor_instance.executions[0][0]
     assert connection.closed is True

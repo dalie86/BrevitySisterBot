@@ -50,6 +50,14 @@ class FakeUpdateRepository:
             claimed_at=record.claimed_at,
         )
 
+    def claim_available(self, now: datetime, limit: int) -> list[QueuedUpdate]:
+        claimed = []
+        for update_id in sorted(self.records)[:limit]:
+            item = self.claim(update_id, now, lease_seconds=300)
+            if item is not None:
+                claimed.append(item)
+        return claimed
+
     def retry(
         self,
         update_id: int,
@@ -111,3 +119,17 @@ def test_duplicate_accept_does_not_process_twice() -> None:
     assert first.processed is True
     assert duplicate.inserted is False
     assert calls == [103]
+
+
+def test_recover_processes_available_updates_without_second_claim() -> None:
+    repository = FakeUpdateRepository()
+    repository.enqueue(104, {"update_id": 104})
+    handled = []
+    service = UpdateService(repository, handled.append)
+    now = datetime(2026, 7, 16, 12, 0, tzinfo=timezone.utc)
+
+    processed = service.recover(now, limit=10)
+
+    assert processed == 1
+    assert handled == [{"update_id": 104}]
+    assert repository.completed == [104]
