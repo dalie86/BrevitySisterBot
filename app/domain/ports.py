@@ -77,6 +77,17 @@ class MemberRepository(Protocol):
     def confirm_summary_link(self, chat_id: int, user_id: int, now: datetime) -> None:
         raise NotImplementedError
 
+    def linked_groups(self, user_id: int) -> Sequence[tuple[int, str]]:
+        raise NotImplementedError
+
+
+class SummarySelectionRepository(Protocol):
+    def create(self, user_id: int, chat_id: int, now: datetime) -> str:
+        raise NotImplementedError
+
+    def resolve(self, token: str, user_id: int, now: datetime) -> int | None:
+        raise NotImplementedError
+
 
 class SummaryRepository(Protocol):
     def find_by_source_hash(self, chat_id: int, source_hash: str) -> str | None:

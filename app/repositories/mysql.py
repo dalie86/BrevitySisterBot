@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
 from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -480,6 +481,62 @@ class MySqlSummaryRepository:
                 ),
             )
             connection.commit()
+
+    def linked_groups(self, user_id: int) -> list[tuple[int, str]]:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT members.chat_id, chats.title
+                FROM chat_members AS members
+                JOIN tracked_chats AS chats ON chats.chat_id = members.chat_id
+                WHERE members.user_id = %s
+                  AND members.summary_linked_at IS NOT NULL
+                ORDER BY chats.title, members.chat_id
+                """,
+                (user_id,),
+            )
+            return [
+                (int(row["chat_id"]), str(row["title"]))
+                for row in cursor.fetchall()
+            ]
+
+
+class MySqlSummarySelectionRepository:
+    def __init__(self, connection_factory: ConnectionFactory) -> None:
+        self.connection_factory = connection_factory
+
+    def create(self, user_id: int, chat_id: int, now: datetime) -> str:
+        token = secrets.token_hex(16)
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            db_now = _to_mysql_datetime(now)
+            cursor.execute(
+                """
+                INSERT INTO summary_selections (
+                    selection_token, user_id, chat_id, expires_at, created_at
+                ) VALUES (%s, %s, %s, %s, %s)
+                """,
+                (token, user_id, chat_id, db_now + timedelta(hours=1), db_now),
+            )
+            connection.commit()
+        return token
+
+    def resolve(self, token: str, user_id: int, now: datetime) -> int | None:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT chat_id
+                FROM summary_selections
+                WHERE selection_token = %s
+                  AND user_id = %s
+                  AND expires_at >= %s
+                """,
+                (token, user_id, _to_mysql_datetime(now)),
+            )
+            row = cursor.fetchone()
+            return int(row["chat_id"]) if row else None
 
 
 def _split_sql_statements(sql: str) -> list[str]:

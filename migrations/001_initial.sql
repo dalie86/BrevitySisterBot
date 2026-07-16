@@ -84,6 +84,15 @@ CREATE TABLE IF NOT EXISTS prepared_summaries (
     KEY idx_summary_schedule (summary_date, summary_kind, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS summary_selections (
+    selection_token CHAR(32) PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    chat_id BIGINT NOT NULL,
+    expires_at DATETIME(6) NOT NULL,
+    created_at DATETIME(6) NOT NULL,
+    KEY idx_summary_selections_user (user_id, expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS scheduled_publications (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     chat_id BIGINT NOT NULL,
