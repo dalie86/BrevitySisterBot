@@ -52,6 +52,32 @@ class MessageRepository(Protocol):
         raise NotImplementedError
 
 
+class ChatRepository(Protocol):
+    def enable(self, chat_id: int, title: str, now: datetime) -> None:
+        raise NotImplementedError
+
+    def disable(self, chat_id: int, now: datetime) -> None:
+        raise NotImplementedError
+
+    def is_tracked(self, chat_id: int) -> bool:
+        raise NotImplementedError
+
+
+class MemberRepository(Protocol):
+    def observe(
+        self,
+        chat_id: int,
+        user_id: int,
+        username: str,
+        full_name: str,
+        now: datetime,
+    ) -> None:
+        raise NotImplementedError
+
+    def confirm_summary_link(self, chat_id: int, user_id: int, now: datetime) -> None:
+        raise NotImplementedError
+
+
 class SummaryRepository(Protocol):
     def find_by_source_hash(self, chat_id: int, source_hash: str) -> str | None:
         raise NotImplementedError

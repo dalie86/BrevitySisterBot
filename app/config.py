@@ -9,6 +9,7 @@ from typing import Mapping
 class Settings:
     telegram_bot_token: str
     webhook_secret_token: str
+    webhook_url: str
     db_host: str
     db_name: str
     db_user: str
@@ -27,6 +28,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     required = (
         "TELEGRAM_BOT_TOKEN",
         "WEBHOOK_SECRET_TOKEN",
+        "WEBHOOK_URL",
         "DB_HOST",
         "DB_NAME",
         "DB_USER",
@@ -40,6 +42,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     return Settings(
         telegram_bot_token=values["TELEGRAM_BOT_TOKEN"].strip(),
         webhook_secret_token=values["WEBHOOK_SECRET_TOKEN"].strip(),
+        webhook_url=values["WEBHOOK_URL"].strip(),
         db_host=values["DB_HOST"].strip(),
         db_name=values["DB_NAME"].strip(),
         db_user=values["DB_USER"].strip(),

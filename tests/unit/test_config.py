@@ -8,6 +8,7 @@ def test_load_settings_uses_production_defaults() -> None:
         {
             "TELEGRAM_BOT_TOKEN": "bot",
             "WEBHOOK_SECRET_TOKEN": "secret",
+            "WEBHOOK_URL": "https://brevity.prosto-kosmos.ru/telegram/webhook",
             "DB_HOST": "localhost",
             "DB_NAME": "brevity",
             "DB_USER": "brevity",
@@ -17,6 +18,7 @@ def test_load_settings_uses_production_defaults() -> None:
     )
 
     assert settings.groq_model == "qwen/qwen3.6-27b"
+    assert settings.webhook_url == "https://brevity.prosto-kosmos.ru/telegram/webhook"
     assert settings.timezone == "Europe/Moscow"
     assert settings.owner_chat_id is None
     assert settings.automatic_min_messages == 15
@@ -38,6 +40,7 @@ def test_load_settings_parses_owner_chat_id() -> None:
         {
             "TELEGRAM_BOT_TOKEN": "bot",
             "WEBHOOK_SECRET_TOKEN": "secret",
+            "WEBHOOK_URL": "https://brevity.prosto-kosmos.ru/telegram/webhook",
             "DB_HOST": "localhost",
             "DB_NAME": "brevity",
             "DB_USER": "brevity",

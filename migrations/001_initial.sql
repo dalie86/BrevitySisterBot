@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS chat_members (
     full_name VARCHAR(255) NOT NULL DEFAULT '',
     first_seen_at DATETIME(6) NOT NULL,
     last_seen_at DATETIME(6) NOT NULL,
+    summary_linked_at DATETIME(6),
     last_membership_check_at DATETIME(6),
     last_membership_status VARCHAR(32),
     PRIMARY KEY (chat_id, user_id),

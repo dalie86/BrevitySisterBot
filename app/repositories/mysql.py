@@ -304,6 +304,95 @@ class MySqlMessageRepository:
         ]
 
 
+class MySqlTrackedChatRepository:
+    def __init__(self, connection_factory: ConnectionFactory) -> None:
+        self.connection_factory = connection_factory
+
+    def enable(self, chat_id: int, title: str, now: datetime) -> None:
+        connection = self.connection_factory()
+        cursor = connection.cursor()
+        db_now = _to_mysql_datetime(now)
+        cursor.execute(
+            """
+            INSERT INTO tracked_chats (
+                chat_id, title, enabled, timezone, scheduled_publish_time,
+                created_at, updated_at
+            ) VALUES (%s, %s, 1, 'Europe/Moscow', '21:00:00', %s, %s)
+            ON DUPLICATE KEY UPDATE
+                title = VALUES(title),
+                enabled = 1,
+                updated_at = VALUES(updated_at)
+            """,
+            (chat_id, title, db_now, db_now),
+        )
+        connection.commit()
+
+    def disable(self, chat_id: int, now: datetime) -> None:
+        connection = self.connection_factory()
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            UPDATE tracked_chats
+            SET enabled = 0, updated_at = %s
+            WHERE chat_id = %s
+            """,
+            (_to_mysql_datetime(now), chat_id),
+        )
+        connection.commit()
+
+    def is_tracked(self, chat_id: int) -> bool:
+        connection = self.connection_factory()
+        cursor = connection.cursor()
+        cursor.execute(
+            "SELECT 1 AS tracked FROM tracked_chats WHERE chat_id = %s",
+            (chat_id,),
+        )
+        return cursor.fetchone() is not None
+
+
+class MySqlMemberRepository:
+    def __init__(self, connection_factory: ConnectionFactory) -> None:
+        self.connection_factory = connection_factory
+
+    def observe(
+        self,
+        chat_id: int,
+        user_id: int,
+        username: str,
+        full_name: str,
+        now: datetime,
+    ) -> None:
+        connection = self.connection_factory()
+        cursor = connection.cursor()
+        db_now = _to_mysql_datetime(now)
+        cursor.execute(
+            """
+            INSERT INTO chat_members (
+                chat_id, user_id, username, full_name, first_seen_at, last_seen_at
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                username = VALUES(username),
+                full_name = VALUES(full_name),
+                last_seen_at = VALUES(last_seen_at)
+            """,
+            (chat_id, user_id, username, full_name, db_now, db_now),
+        )
+        connection.commit()
+
+    def confirm_summary_link(self, chat_id: int, user_id: int, now: datetime) -> None:
+        connection = self.connection_factory()
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            UPDATE chat_members
+            SET summary_linked_at = %s
+            WHERE chat_id = %s AND user_id = %s
+            """,
+            (_to_mysql_datetime(now), chat_id, user_id),
+        )
+        connection.commit()
+
+
 def _split_sql_statements(sql: str) -> list[str]:
     return [statement.strip() for statement in sql.split(";") if statement.strip()]
 
