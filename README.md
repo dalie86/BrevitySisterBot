@@ -1,11 +1,160 @@
 # BrevitySisterBot 0.2.0
 
-Новая production-реализация Telegram-бота ежедневных сводок для Beget:
-Python WSGI webhook, MySQL, Groq и безопасный архивный цикл.
+Production-версия Telegram-бота ежедневных групповых сводок:
 
-Текущая разработка следует:
+- webhook на Python WSGI/Passenger;
+- MySQL как единственная рабочая и архивная база;
+- Groq API с моделью `qwen/qwen3.6-27b`;
+- локальный эвристический fallback при недоступности модели;
+- автоматическая публикация в `21:00` по Москве;
+- групповые и приватные сводки по запросу;
+- архив, backup, диагностика и recovery без постоянно работающего процесса.
 
-- [архитектурной спецификации на русском](docs/superpowers/specs/2026-07-16-brevity-sister-bot-0.2.0-design-ru.md);
-- [implementation plan](docs/superpowers/plans/2026-07-16-brevity-sister-bot-0.2.0.md).
+Историческая версия `0.1.0` сохранена без runtime-секретов в
+[`mvp-1/`](mvp-1/).
 
-Историческая версия `0.1.0` сохранена в [`mvp-1/`](mvp-1/).
+## Как работает
+
+Webhook немедленно сохраняет каждый Telegram update в MySQL и сразу пытается
+обработать его. Поэтому запрос `/summary` видит все сообщения, уже доставленные
+webhook’ом, и не ждёт пятиминутный cron. Recovery раз в пять минут нужен только
+для подбора прерванных или временно неуспешных задач.
+
+Сообщения уникальны по `(chat_id, telegram_message_id)`. Генерация сводки
+резервируется по хэшу исходных сообщений до обращения в Groq, поэтому
+параллельные одинаковые запросы не запускают модель повторно.
+
+Основное расписание:
+
+- `20:45` — подготовка автоматических сводок;
+- `21:00` — публикация;
+- `21:15` — идемпотентное копирование сообщений и сводок в архив;
+- `21:30` — удаление только тех рабочих сообщений, чья архивная копия проверена;
+- каждые 5 минут — recovery Telegram update’ов;
+- `03:15` — retention;
+- `03:30` — backup MySQL.
+
+## Команды бота
+
+- `/enable_daily` — подключить группу, только для администратора;
+- `/disable_daily` — выключить ежедневную публикацию, буферизация продолжается;
+- `/summary` в группе — подготовить сводку и опубликовать её в группе;
+- `/summary` в личном чате — получить сводку приватно.
+
+Первый групповой `/summary` связывает участника с группой. Если в личном чате
+доступно несколько групп, бот показывает безопасный список кнопок. Перед
+приватной выдачей членство повторно проверяется через `getChatMember`.
+
+Порог автоматической сводки — 15 сообщений, ручной — 5. Перед генерацией бот
+предупреждает, что обработка может занять до 1–2 минут.
+
+## Локальная установка
+
+Требуется Python 3.11+ и MySQL 8-compatible.
+
+```bash
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -e '.[dev]'
+cp .env.example .env
+```
+
+Заполните `.env`, затем примените схему:
+
+```bash
+.venv/bin/python scripts/migrate.py
+```
+
+Проверка:
+
+```bash
+.venv/bin/python -m pytest -q
+.venv/bin/ruff check app scripts tests passenger_wsgi.py public_html/passenger_wsgi.py
+```
+
+## Beget
+
+Production URL:
+
+```text
+https://brevity.prosto-kosmos.ru
+https://brevity.prosto-kosmos.ru/telegram/webhook
+```
+
+Ожидаемая структура:
+
+```text
+~/brevity.prosto-kosmos.ru/
+  .env
+  .venv/
+  app/
+  migrations/
+  scripts/
+  public_html/
+    passenger_wsgi.py
+  backups/
+  logs/
+  tmp/
+```
+
+Подготовка:
+
+1. Создать отдельную MySQL-базу и пользователя для BrevitySisterBot.
+2. Создать remote `.env` по [`.env.example`](.env.example).
+3. Создать локальный `.env.hosting` по
+   [`hosting.env.example`](hosting.env.example).
+4. Настроить Python/Passenger для каталога поддомена.
+5. Запустить:
+
+```bash
+scripts/deploy_beget.exp
+```
+
+Deploy не переносит `.env`, SQLite, backup, логи, `.git` и локальные virtualenv.
+После загрузки он устанавливает зависимости, применяет миграции и создаёт
+`tmp/restart.txt` для перезапуска Passenger.
+
+После первого deploy:
+
+```bash
+.venv/bin/python scripts/set_webhook.py
+.venv/bin/python scripts/smoke_preview.py
+```
+
+Задания из [`crontab.beget.example`](crontab.beget.example) нужно добавить
+через панель Beget, заменив `LOGIN` на логин аккаунта.
+
+## Импорт 0.1.0
+
+Сначала сделайте неизменяемые копии старых SQLite-файлов. Импорт открывает
+источники в read-only режиме и использует идемпотентные вставки:
+
+```bash
+.venv/bin/python scripts/import_mvp.py \
+  --bot-db /path/to/bot.db \
+  --archive-db /path/to/archive.db
+```
+
+Автоматическую очистку следует включать только после проверки количества
+импортированных строк и успешного backup MySQL.
+
+## Операционные команды
+
+```bash
+.venv/bin/python -m app.jobs.cli recover
+.venv/bin/python -m app.jobs.cli prepare
+.venv/bin/python -m app.jobs.cli publish
+.venv/bin/python -m app.jobs.cli archive
+.venv/bin/python -m app.jobs.cli cleanup
+.venv/bin/python -m app.jobs.cli purge
+.venv/bin/python -m app.jobs.cli audit
+/bin/sh scripts/backup_db.sh
+```
+
+Все cron-команды используют MySQL lease, чтобы одинаковые задания не
+выполнялись параллельно.
+
+## Документация
+
+- [Архитектурная спецификация на русском](docs/superpowers/specs/2026-07-16-brevity-sister-bot-0.2.0-design-ru.md)
+- [Architecture specification in English](docs/superpowers/specs/2026-07-16-brevity-sister-bot-0.2.0-design.md)
+- [Implementation plan](docs/superpowers/plans/2026-07-16-brevity-sister-bot-0.2.0.md)
