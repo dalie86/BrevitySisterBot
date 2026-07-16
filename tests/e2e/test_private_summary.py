@@ -106,9 +106,7 @@ def test_private_summary_for_one_group_is_private() -> None:
 
 
 def test_private_summary_with_multiple_groups_shows_opaque_buttons() -> None:
-    handler, telegram, _, selections = make_handler(
-        [(-1001, "Group 1"), (-1002, "Group 2")]
-    )
+    handler, telegram, _, selections = make_handler([(-1001, "Group 1"), (-1002, "Group 2")])
 
     handler(private_command())
 
@@ -139,4 +137,3 @@ def test_callback_rechecks_membership_before_private_delivery() -> None:
 
     assert summaries.calls == []
     assert "не состоите" in telegram.sent[-1][1]
-

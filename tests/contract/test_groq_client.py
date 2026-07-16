@@ -72,4 +72,3 @@ def test_http_429_is_normalized_without_api_key(monkeypatch) -> None:
     assert raised.value.status_code == 429
     assert raised.value.retry_after_seconds == 9
     assert "super-secret" not in str(raised.value)
-

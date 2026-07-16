@@ -57,9 +57,7 @@ def test_send_message_calls_bot_api_and_returns_message_id(monkeypatch) -> None:
 def test_get_chat_member_returns_status(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.integrations.telegram.urllib.request.urlopen",
-        lambda request, timeout: FakeResponse(
-            {"ok": True, "result": {"status": "administrator"}}
-        ),
+        lambda request, timeout: FakeResponse({"ok": True, "result": {"status": "administrator"}}),
     )
 
     assert TelegramClient("token").get_chat_member(-1001, 42) == "administrator"

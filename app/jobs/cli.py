@@ -14,6 +14,7 @@ from app.repositories.mysql import (
     MySqlDatabase,
     MySqlJobLockRepository,
     MySqlLifecycleStore,
+    MySqlMaintenanceStore,
     MySqlMemberRepository,
     MySqlMessageRepository,
     MySqlSummaryRepository,
@@ -21,13 +22,14 @@ from app.repositories.mysql import (
     MySqlTrackedChatRepository,
     MySqlUpdateRepository,
 )
+from app.jobs.audit import OperationalAuditService
 from app.services.group_updates import GroupUpdateHandler
 from app.services.lifecycle import JobReport, LifecycleService
 from app.services.on_demand import OnDemandSummaryHandler, OnDemandSummaryService
 from app.services.summaries import SummaryService
 from app.services.updates import UpdateService
 
-COMMANDS = {"recover", "prepare", "publish", "archive", "cleanup"}
+COMMANDS = {"recover", "prepare", "publish", "archive", "cleanup", "purge", "audit"}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -58,6 +60,9 @@ def main(argv: list[str] | None = None) -> int:
     if isinstance(result, JobReport):
         print(json.dumps(asdict(result), ensure_ascii=False, sort_keys=True))
         return 1 if result.errors else 0
+    if isinstance(result, dict):
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 1 if result.get("healthy") is False else 0
     print(json.dumps({"processed_updates": result}))
     return 0
 
@@ -67,7 +72,7 @@ def _run_command(
     settings: Settings,
     database: MySqlDatabase,
     now: datetime,
-) -> JobReport | int:
+) -> JobReport | int | dict[str, int | bool]:
     telegram = TelegramClient(settings.telegram_bot_token)
     messages = MySqlMessageRepository(database.connect)
     members = MySqlMemberRepository(database.connect)
@@ -82,6 +87,12 @@ def _run_command(
         automatic_min_messages=settings.automatic_min_messages,
         on_demand_min_messages=settings.on_demand_min_messages,
     )
+    if command in {"purge", "audit"}:
+        maintenance = OperationalAuditService(
+            MySqlMaintenanceStore(database.connect),
+            settings.archive_retention_days,
+        )
+        return maintenance.purge(now) if command == "purge" else maintenance.audit(now)
     if command == "recover":
         on_demand_requests = OnDemandSummaryService(
             summaries=summaries,

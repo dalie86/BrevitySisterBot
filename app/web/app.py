@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import json
 from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
@@ -33,10 +34,8 @@ def create_application(
         if method != "POST":
             return _json_response(start_response, "405 Method Not Allowed", {"ok": False})
 
-        provided_secret = str(
-            environ.get("HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN", "")
-        )
-        if provided_secret != webhook_secret:
+        provided_secret = str(environ.get("HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN", ""))
+        if not hmac.compare_digest(provided_secret, webhook_secret):
             return _json_response(start_response, "403 Forbidden", {"ok": False})
 
         try:

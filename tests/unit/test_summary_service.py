@@ -23,7 +23,9 @@ class FakeMessages:
         ]
 
     def list_between(self, chat_id, start, end):
-        return [item for item in self.items if item.chat_id == chat_id and start <= item.sent_at < end]
+        return [
+            item for item in self.items if item.chat_id == chat_id and start <= item.sent_at < end
+        ]
 
 
 class FakeSummaries:
@@ -59,7 +61,9 @@ class FakeLlm:
 
 def make_service(count: int, llm: FakeLlm | None = None):
     summaries = FakeSummaries()
-    selected_llm = llm or FakeLlm('{"headline":"Главное","topics":[{"title":"Релиз","details":"Договорились о запуске"}]}')
+    selected_llm = llm or FakeLlm(
+        '{"headline":"Главное","topics":[{"title":"Релиз","details":"Договорились о запуске"}]}'
+    )
     return (
         SummaryService(
             messages=FakeMessages(count),
@@ -112,7 +116,9 @@ def test_invalid_json_gets_one_repair_attempt_then_fallback() -> None:
     class RepairingLlm(FakeLlm):
         def generate_summary(self, system_prompt, user_prompt):
             self.call_count += 1
-            content = "not-json" if self.call_count == 1 else '{"headline":"Исправлено","topics":[]}'
+            content = (
+                "not-json" if self.call_count == 1 else '{"headline":"Исправлено","topics":[]}'
+            )
             return LlmResult(content, "groq", "model", 10)
 
     llm = RepairingLlm()

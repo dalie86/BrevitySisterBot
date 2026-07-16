@@ -964,6 +964,90 @@ class MySqlJobLockRepository:
             connection.commit()
 
 
+class MySqlMaintenanceStore:
+    def __init__(self, connection_factory: ConnectionFactory) -> None:
+        self.connection_factory = connection_factory
+
+    def purge_expired(self, now: datetime, retention_days: int) -> dict[str, int]:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            db_now = _to_mysql_datetime(now)
+            cutoff = db_now - timedelta(days=retention_days)
+            statements = {
+                "archived_messages": (
+                    "DELETE FROM archived_messages WHERE expires_at < %s",
+                    (db_now,),
+                ),
+                "archived_summaries": (
+                    "DELETE FROM archived_summaries WHERE expires_at < %s",
+                    (db_now,),
+                ),
+                "summary_selections": (
+                    "DELETE FROM summary_selections WHERE expires_at < %s",
+                    (db_now,),
+                ),
+                "telegram_updates": (
+                    """
+                    DELETE FROM telegram_updates
+                    WHERE status IN ('completed', 'failed') AND updated_at < %s
+                    """,
+                    (cutoff,),
+                ),
+            }
+            deleted = {}
+            for name, (sql, params) in statements.items():
+                cursor.execute(sql, params)
+                deleted[name] = int(cursor.rowcount)
+            connection.commit()
+            return deleted
+
+    def audit(self, now: datetime) -> dict[str, int]:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            db_now = _to_mysql_datetime(now)
+            counters = {
+                "queued_updates": self._count(
+                    cursor,
+                    """
+                    SELECT COUNT(*) AS item_count FROM telegram_updates
+                    WHERE status IN ('pending', 'retry') AND available_at <= %s
+                    """,
+                    (db_now,),
+                ),
+                "stale_updates": self._count(
+                    cursor,
+                    """
+                    SELECT COUNT(*) AS item_count FROM telegram_updates
+                    WHERE status = 'processing' AND claimed_at < %s
+                    """,
+                    (db_now - timedelta(minutes=10),),
+                ),
+                "stale_publications": self._count(
+                    cursor,
+                    """
+                    SELECT COUNT(*) AS item_count FROM scheduled_publications
+                    WHERE status = 'sending' AND claimed_at < %s
+                    """,
+                    (db_now - timedelta(minutes=10),),
+                ),
+                "unverified_archives": self._count(
+                    cursor,
+                    """
+                    SELECT COUNT(*) AS item_count FROM daily_lifecycle
+                    WHERE archive_completed_at IS NOT NULL AND archive_verified = 0
+                    """,
+                    (),
+                ),
+            }
+            return counters
+
+    @staticmethod
+    def _count(cursor: Any, sql: str, params: tuple[Any, ...]) -> int:
+        cursor.execute(sql, params)
+        row = cursor.fetchone()
+        return int(row["item_count"]) if row else 0
+
+
 def _split_sql_statements(sql: str) -> list[str]:
     return [statement.strip() for statement in sql.split(";") if statement.strip()]
 
