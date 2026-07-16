@@ -46,6 +46,7 @@ class StorageTests(unittest.TestCase):
             )
             self.assertEqual(len(storage.get_enabled_chats()), 1)
             storage.disable_chat(123)
+            self.assertTrue(storage.is_chat_tracked(123))
             self.assertFalse(storage.is_chat_enabled(123))
 
 
