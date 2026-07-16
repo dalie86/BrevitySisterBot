@@ -99,11 +99,14 @@ https://brevity.prosto-kosmos.ru/telegram/webhook
 Подготовка:
 
 1. Создать отдельную MySQL-базу и пользователя для BrevitySisterBot.
-2. Создать remote `.env` по [`.env.example`](.env.example).
-3. Создать локальный `.env.hosting` по
+2. В BotFather отключить privacy mode, иначе бот не получит обычные сообщения
+   группы и не сможет составить сводку.
+3. В настройках проекта Groq включить Zero Data Retention и создать API key.
+4. Создать remote `.env` по [`.env.example`](.env.example).
+5. Создать локальный `.env.hosting` по
    [`hosting.env.example`](hosting.env.example).
-4. Настроить Python/Passenger для каталога поддомена.
-5. Запустить:
+6. Настроить Python/Passenger для каталога поддомена.
+7. Запустить:
 
 ```bash
 scripts/deploy_beget.exp

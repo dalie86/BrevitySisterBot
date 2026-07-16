@@ -96,7 +96,12 @@ class SummarySelectionRepository(Protocol):
 
 
 class SummaryRepository(Protocol):
-    def find_by_source_hash(self, chat_id: int, source_hash: str) -> str | None:
+    def find_by_source_hash(
+        self,
+        chat_id: int,
+        source_hash: str,
+        kind: SummaryKind,
+    ) -> str | None:
         raise NotImplementedError
 
     def begin_generation(

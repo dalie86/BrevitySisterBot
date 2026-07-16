@@ -80,7 +80,7 @@ class SummaryService:
                 message_count=len(messages),
             )
 
-        cached = self.summaries.find_by_source_hash(chat_id, source_hash)
+        cached = self.summaries.find_by_source_hash(chat_id, source_hash, kind)
         if cached:
             return GeneratedSummary(
                 chat_id=chat_id,

@@ -433,7 +433,12 @@ class MySqlSummaryRepository:
     def __init__(self, connection_factory: ConnectionFactory) -> None:
         self.connection_factory = connection_factory
 
-    def find_by_source_hash(self, chat_id: int, source_hash: str) -> str | None:
+    def find_by_source_hash(
+        self,
+        chat_id: int,
+        source_hash: str,
+        kind: Any,
+    ) -> str | None:
         with _managed_connection(self.connection_factory) as connection:
             cursor = connection.cursor()
             cursor.execute(
@@ -442,13 +447,14 @@ class MySqlSummaryRepository:
                 FROM prepared_summaries
                 WHERE chat_id = %s
                   AND source_hash = %s
+                  AND summary_kind = %s
                   AND status IN ('prepared', 'sent')
                   AND summary_text IS NOT NULL
                   AND summary_text <> ''
                 ORDER BY id DESC
                 LIMIT 1
                 """,
-                (chat_id, source_hash),
+                (chat_id, source_hash, str(getattr(kind, "value", kind))),
             )
             row = cursor.fetchone()
             return str(row["summary_text"]) if row else None

@@ -34,8 +34,8 @@ class FakeSummaries:
         self.saved = []
         self.active = set()
 
-    def find_by_source_hash(self, chat_id, source_hash):
-        return self.items.get((chat_id, source_hash))
+    def find_by_source_hash(self, chat_id, source_hash, kind):
+        return self.items.get((chat_id, kind, source_hash))
 
     def begin_generation(self, chat_id, summary_date, kind, source_hash, requester_user_id, now):
         key = (chat_id, kind, source_hash)
@@ -46,7 +46,7 @@ class FakeSummaries:
 
     def save(self, summary, requester_user_id, now):
         self.saved.append((summary, requester_user_id, now))
-        self.items[(summary.chat_id, summary.source_hash)] = summary.text
+        self.items[(summary.chat_id, summary.kind, summary.source_hash)] = summary.text
 
 
 class FakeLlm:
@@ -157,3 +157,16 @@ def test_active_generation_is_not_sent_to_llm_twice() -> None:
 
     assert result.outcome == "preparing"
     assert llm.call_count == 0
+
+
+def test_on_demand_cache_does_not_replace_scheduled_summary_record() -> None:
+    service, llm, summaries = make_service(15)
+
+    on_demand = service.generate(-1001, SummaryKind.ON_DEMAND, 42, NOW)
+    scheduled = service.generate(-1001, SummaryKind.SCHEDULED, None, NOW)
+
+    assert on_demand.kind is SummaryKind.ON_DEMAND
+    assert scheduled.kind is SummaryKind.SCHEDULED
+    assert scheduled.outcome == "generated"
+    assert llm.call_count == 2
+    assert len(summaries.saved) == 2
