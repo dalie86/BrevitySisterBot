@@ -71,6 +71,7 @@ class GeneratedSummary:
     provider: str | None = None
     model: str | None = None
     fallback_type: str | None = None
+    outcome: str = "generated"
 
 
 def build_source_hash(

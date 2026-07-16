@@ -39,12 +39,16 @@ class RecordingConnection:
     ) -> None:
         self.cursor_instance = RecordingCursor(rowcount, fetchone_result, fetchall_result)
         self.commits = 0
+        self.closed = False
 
     def cursor(self) -> RecordingCursor:
         return self.cursor_instance
 
     def commit(self) -> None:
         self.commits += 1
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def test_enqueue_serializes_payload_and_uses_duplicate_safe_insert() -> None:
@@ -58,6 +62,7 @@ def test_enqueue_serializes_payload_and_uses_duplicate_safe_insert() -> None:
     assert "INSERT IGNORE INTO telegram_updates" in sql
     assert json.loads(params[1])["update_id"] == 123
     assert connection.commits == 1
+    assert connection.closed is True
 
 
 def test_add_message_uses_chat_and_telegram_message_identity() -> None:
@@ -80,6 +85,7 @@ def test_add_message_uses_chat_and_telegram_message_identity() -> None:
     assert "INSERT IGNORE INTO messages" in sql
     assert params[0:2] == (-1001, 7)
     assert connection.commits == 1
+    assert connection.closed is True
 
 
 def test_claim_marks_update_processing_and_returns_domain_record() -> None:
@@ -104,6 +110,9 @@ def test_claim_marks_update_processing_and_returns_domain_record() -> None:
     assert claimed.attempt_count == 1
     assert "UPDATE telegram_updates" in connection.cursor_instance.executions[0][0]
     assert connection.commits == 1
+    update_params = connection.cursor_instance.executions[0][1]
+    assert update_params[3] == datetime(2026, 7, 16, 11, 59)
+    assert connection.closed is True
 
 
 def test_list_between_converts_mysql_rows_to_messages() -> None:
@@ -133,3 +142,4 @@ def test_list_between_converts_mysql_rows_to_messages() -> None:
     assert messages[0].telegram_message_id == 7
     assert messages[0].sent_at.tzinfo == timezone.utc
     assert "ORDER BY sent_at" in connection.cursor_instance.executions[0][0]
+    assert connection.closed is True
