@@ -9,6 +9,7 @@ class FakeUpdateRepository:
         self.records: dict[int, QueuedUpdate] = {}
         self.retries: list[tuple[int, datetime, str]] = []
         self.completed: list[int] = []
+        self.failed: list[tuple[int, str]] = []
 
     def enqueue(self, update_id: int, payload: dict) -> bool:
         if update_id in self.records:
@@ -75,6 +76,9 @@ class FakeUpdateRepository:
             available_at=available_at,
         )
 
+    def fail(self, update_id: int, now: datetime, error: str) -> None:
+        self.failed.append((update_id, error))
+
 
 def test_accept_persists_before_processing() -> None:
     repository = FakeUpdateRepository()
@@ -133,3 +137,25 @@ def test_recover_processes_available_updates_without_second_claim() -> None:
     assert processed == 1
     assert handled == [{"update_id": 104}]
     assert repository.completed == [104]
+
+
+def test_poison_update_moves_to_failed_after_max_attempts() -> None:
+    repository = FakeUpdateRepository()
+    repository.records[105] = QueuedUpdate(
+        update_id=105,
+        payload={"update_id": 105},
+        status=UpdateStatus.PROCESSING,
+        attempt_count=5,
+        available_at=datetime(2026, 7, 16, 12, 0, tzinfo=timezone.utc),
+    )
+    service = UpdateService(
+        repository,
+        lambda payload: (_ for _ in ()).throw(ValueError("poison")),
+        max_attempts=5,
+    )
+
+    processed = service.process_claimed(repository.records[105], datetime.now(timezone.utc))
+
+    assert processed is False
+    assert repository.failed == [(105, "poison")]
+    assert repository.retries == []

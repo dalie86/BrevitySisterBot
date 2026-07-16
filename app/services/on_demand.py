@@ -131,6 +131,7 @@ class OnDemandSummaryHandler:
         callback = update.callback
         if callback is None or not callback.data.startswith("summary_group:"):
             return
+        self.telegram.answer_callback_query(callback.callback_id)
         token = callback.data.removeprefix("summary_group:")
         chat_id = self.selections.resolve(token, callback.user_id, self.now())
         if chat_id is None:

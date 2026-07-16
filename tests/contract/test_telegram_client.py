@@ -63,6 +63,15 @@ def test_get_chat_member_returns_status(monkeypatch) -> None:
     assert TelegramClient("token").get_chat_member(-1001, 42) == "administrator"
 
 
+def test_answer_callback_query_accepts_boolean_result(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.integrations.telegram.urllib.request.urlopen",
+        lambda request, timeout: FakeResponse({"ok": True, "result": True}),
+    )
+
+    TelegramClient("token").answer_callback_query("callback-1")
+
+
 def test_http_error_is_normalized_without_token_leak(monkeypatch) -> None:
     error = HTTPError(
         url="https://api.telegram.org/bottoken/sendMessage",

@@ -17,6 +17,7 @@ from app.domain.models import (
 from app.domain.ports import LlmGateway, MessageRepository, SummaryRepository
 
 TRANSCRIPT_CHARACTER_LIMIT = 18_000
+TELEGRAM_SUMMARY_LIMIT = 3_900
 SYSTEM_PROMPT = (
     "Ты редактор краткой сводки Telegram-группы. Пиши по-русски, строго по фактам "
     "из переписки, без домыслов и персональных оценок. Верни только JSON: "
@@ -198,7 +199,7 @@ def _render_payload(payload: dict[str, Any]) -> str:
     lines = ["📝 Сводка за сегодня", "", str(payload["headline"])]
     for topic in payload["topics"]:
         lines.extend(("", f"• {topic['title']}", topic["details"]))
-    return "\n".join(lines)
+    return _telegram_safe_text("\n".join(lines))
 
 
 def _heuristic_summary(messages: Sequence[StoredMessage]) -> str:
@@ -214,4 +215,10 @@ def _heuristic_summary(messages: Sequence[StoredMessage]) -> str:
     if recent:
         lines.append("Последние обсуждавшиеся вопросы:")
         lines.extend(f"• {text[:240]}" for text in recent)
-    return "\n".join(lines)
+    return _telegram_safe_text("\n".join(lines))
+
+
+def _telegram_safe_text(text: str) -> str:
+    if len(text) <= TELEGRAM_SUMMARY_LIMIT:
+        return text
+    return text[: TELEGRAM_SUMMARY_LIMIT - 1].rstrip() + "…"

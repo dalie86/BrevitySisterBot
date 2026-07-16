@@ -26,6 +26,8 @@ class OperationalAuditService:
             "stale_updates",
             "stale_publications",
             "unverified_archives",
+            "failed_updates",
+            "review_required_effects",
         )
         return {
             **counters,

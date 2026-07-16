@@ -5,6 +5,7 @@ from app.domain.models import StoredMessage
 from app.repositories.mysql import (
     MySqlMemberRepository,
     MySqlMessageRepository,
+    MySqlTelegramEffectRepository,
     MySqlUpdateRepository,
 )
 
@@ -116,6 +117,18 @@ def test_claim_marks_update_processing_and_returns_domain_record() -> None:
     assert connection.closed is True
 
 
+def test_claim_available_includes_expired_processing_leases() -> None:
+    now = datetime(2026, 7, 16, 12, 0, tzinfo=timezone.utc)
+    connection = RecordingConnection(fetchall_result=[])
+    repository = MySqlUpdateRepository(lambda: connection)
+
+    repository.claim_available(now, limit=10)
+
+    sql, params = connection.cursor_instance.executions[0]
+    assert "status = 'processing'" in sql
+    assert params[0] == datetime(2026, 7, 16, 11, 55)
+
+
 def test_list_between_converts_mysql_rows_to_messages() -> None:
     sent_at = datetime(2026, 7, 16, 12, 0)
     connection = RecordingConnection(
@@ -159,4 +172,23 @@ def test_member_repository_returns_linked_groups() -> None:
 
     assert groups == [(-1001, "Group 1"), (-1002, "Group 2")]
     assert "summary_linked_at IS NOT NULL" in connection.cursor_instance.executions[0][0]
+    assert connection.closed is True
+
+
+def test_telegram_effect_is_persisted_before_external_send() -> None:
+    connection = RecordingConnection(rowcount=1)
+    repository = MySqlTelegramEffectRepository(lambda: connection)
+
+    existing = repository.begin(
+        "update:123:send_message:0",
+        123,
+        "send_message",
+        "a" * 64,
+        datetime(2026, 7, 16, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert existing is None
+    assert "status" in connection.cursor_instance.executions[0][0]
+    assert "'sending'" in connection.cursor_instance.executions[0][0]
+    assert connection.commits == 1
     assert connection.closed is True

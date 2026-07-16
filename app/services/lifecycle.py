@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Protocol, Sequence
 from zoneinfo import ZoneInfo
 
@@ -48,7 +48,7 @@ class LifecycleStore(Protocol):
     ) -> None:
         raise NotImplementedError
 
-    def mark_publication_retry(
+    def mark_publication_review_required(
         self,
         publication_id: int,
         now: datetime,
@@ -60,6 +60,9 @@ class LifecycleStore(Protocol):
         raise NotImplementedError
 
     def cleanup_verified(self, summary_date: str, now: datetime) -> int:
+        raise NotImplementedError
+
+    def preview_cleanup(self, summary_date: str) -> int:
         raise NotImplementedError
 
 
@@ -143,7 +146,7 @@ class LifecycleService:
                 )
                 sent += 1
             except Exception as exc:
-                self.store.mark_publication_retry(publication_id, now, str(exc))
+                self.store.mark_publication_review_required(publication_id, now, str(exc))
                 errors += 1
         return JobReport(
             processed_chats=len(publications),
@@ -152,15 +155,22 @@ class LifecycleService:
         )
 
     def archive_day(self, now: datetime) -> JobReport:
-        count = self.store.archive_day(
-            self._summary_date(now),
-            now,
-            self.retention_days,
-        )
+        local_date = now.astimezone(self.timezone).date()
+        count = 0
+        for summary_date in (local_date - timedelta(days=1), local_date):
+            count += self.store.archive_day(
+                summary_date.isoformat(),
+                now,
+                self.retention_days,
+            )
         return JobReport(archived_messages=count)
 
-    def cleanup_day(self, now: datetime) -> JobReport:
-        count = self.store.cleanup_verified(self._summary_date(now), now)
+    def cleanup_day(self, now: datetime, *, dry_run: bool = False) -> JobReport:
+        previous_date = now.astimezone(self.timezone).date() - timedelta(days=1)
+        if dry_run:
+            count = self.store.preview_cleanup(previous_date.isoformat())
+        else:
+            count = self.store.cleanup_verified(previous_date.isoformat(), now)
         return JobReport(deleted_messages=count)
 
     def _summary_date(self, now: datetime) -> str:

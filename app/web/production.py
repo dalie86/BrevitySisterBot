@@ -14,12 +14,14 @@ from app.repositories.mysql import (
     MySqlMessageRepository,
     MySqlSummaryRepository,
     MySqlSummarySelectionRepository,
+    MySqlTelegramEffectRepository,
     MySqlTrackedChatRepository,
     MySqlUpdateRepository,
 )
 from app.services.group_updates import GroupUpdateHandler
 from app.services.on_demand import OnDemandSummaryHandler, OnDemandSummaryService
 from app.services.summaries import SummaryService
+from app.services.telegram_effects import DurableTelegramGateway, telegram_update_scope
 from app.services.updates import UpdateService
 from app.web.app import create_application
 
@@ -27,7 +29,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(PROJECT_ROOT / ".env")
 settings = load_settings()
 database = MySqlDatabase(settings)
-telegram = TelegramClient(settings.telegram_bot_token)
+raw_telegram = TelegramClient(settings.telegram_bot_token)
+telegram = DurableTelegramGateway(
+    raw=raw_telegram,
+    effects=MySqlTelegramEffectRepository(database.connect),
+    now=lambda: datetime.now(timezone.utc),
+)
 chats = MySqlTrackedChatRepository(database.connect)
 members = MySqlMemberRepository(database.connect)
 messages = MySqlMessageRepository(database.connect)
@@ -84,9 +91,10 @@ private_summary_handler = OnDemandSummaryHandler(
 
 
 def _business_handler(payload: dict) -> None:
-    update = parse_update(payload)
-    group_handler(update)
-    private_summary_handler(update)
+    with telegram_update_scope(int(payload["update_id"])):
+        update = parse_update(payload)
+        group_handler(update)
+        private_summary_handler(update)
 
 
 application = create_application(

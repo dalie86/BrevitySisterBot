@@ -134,7 +134,7 @@ __version__ = "0.2.0"
 Запуск тестов:
 
 ```bash
-python3 -m unittest discover -s mvp-1/tests -v
+(cd mvp-1 && python3 -m unittest discover -s tests -v)
 ```
 ```
 
@@ -185,7 +185,7 @@ Run:
 
 ```bash
 pytest tests/unit/test_version.py -v
-python3 -m unittest discover -s mvp-1/tests -v
+(cd mvp-1 && python3 -m unittest discover -s tests -v)
 git status --short
 ```
 
@@ -1228,7 +1228,7 @@ Run:
 pytest -v
 ruff check app scripts tests
 python -m compileall -q app scripts
-python3 -m unittest discover -s mvp-1/tests -v
+(cd mvp-1 && python3 -m unittest discover -s tests -v)
 ```
 
 Expected: все tests PASS, ruff exit `0`, compileall exit `0`, MVP tests PASS.

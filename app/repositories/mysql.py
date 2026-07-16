@@ -194,16 +194,20 @@ class MySqlUpdateRepository:
         with _managed_connection(self.connection_factory) as connection:
             cursor = connection.cursor()
             db_now = _to_mysql_datetime(now)
+            stale_before = db_now - timedelta(minutes=5)
             cursor.execute(
                 """
                 SELECT update_id
                 FROM telegram_updates
-                WHERE status IN ('pending', 'retry')
+                WHERE (
+                    status IN ('pending', 'retry')
+                    OR (status = 'processing' AND claimed_at < %s)
+                )
                   AND available_at <= %s
                 ORDER BY available_at, update_id
                 LIMIT %s
                 """,
-                (db_now, limit),
+                (stale_before, db_now, limit),
             )
             update_ids = [int(row["update_id"]) for row in cursor.fetchall()]
             connection.commit()
@@ -258,6 +262,104 @@ class MySqlUpdateRepository:
                     _to_mysql_datetime(now),
                     update_id,
                 ),
+            )
+            connection.commit()
+
+    def fail(self, update_id: int, now: datetime, error: str) -> None:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            db_now = _to_mysql_datetime(now)
+            cursor.execute(
+                """
+                UPDATE telegram_updates
+                SET status = 'failed',
+                    claimed_at = NULL,
+                    last_error_message = %s,
+                    completed_at = %s,
+                    updated_at = %s
+                WHERE update_id = %s
+                """,
+                (error[:1000], db_now, db_now, update_id),
+            )
+            connection.commit()
+
+
+class MySqlTelegramEffectRepository:
+    def __init__(self, connection_factory: ConnectionFactory) -> None:
+        self.connection_factory = connection_factory
+
+    def begin(
+        self,
+        effect_key: str,
+        update_id: int,
+        method: str,
+        payload_hash: str,
+        now: datetime,
+    ) -> tuple[str, int | None] | None:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            db_now = _to_mysql_datetime(now)
+            cursor.execute(
+                """
+                INSERT IGNORE INTO telegram_effects (
+                    effect_key, update_id, method, payload_hash, status,
+                    created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, 'sending', %s, %s)
+                """,
+                (effect_key, update_id, method, payload_hash, db_now, db_now),
+            )
+            if cursor.rowcount == 1:
+                connection.commit()
+                return None
+            cursor.execute(
+                """
+                SELECT status, telegram_message_id, payload_hash
+                FROM telegram_effects
+                WHERE effect_key = %s
+                """,
+                (effect_key,),
+            )
+            row = cursor.fetchone()
+            connection.commit()
+            if row is None:
+                raise RuntimeError("Telegram effect disappeared after duplicate insert")
+            if str(row["payload_hash"]) != payload_hash:
+                raise RuntimeError("Telegram effect payload changed for the same update")
+            message_id = row["telegram_message_id"]
+            return (
+                str(row["status"]),
+                int(message_id) if message_id is not None else None,
+            )
+
+    def mark_sent(
+        self,
+        effect_key: str,
+        telegram_message_id: int,
+        now: datetime,
+    ) -> None:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                UPDATE telegram_effects
+                SET status = 'sent', telegram_message_id = %s,
+                    last_error_message = NULL, updated_at = %s
+                WHERE effect_key = %s
+                """,
+                (telegram_message_id, _to_mysql_datetime(now), effect_key),
+            )
+            connection.commit()
+
+    def mark_review_required(self, effect_key: str, error: str, now: datetime) -> None:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                UPDATE telegram_effects
+                SET status = 'review_required', last_error_message = %s, updated_at = %s
+                WHERE effect_key = %s
+                """,
+                (error[:1000], _to_mysql_datetime(now), effect_key),
             )
             connection.commit()
 
@@ -706,21 +808,17 @@ class MySqlLifecycleStore:
         with _managed_connection(self.connection_factory) as connection:
             cursor = connection.cursor()
             db_now = _to_mysql_datetime(now)
-            stale_before = db_now - timedelta(minutes=5)
             cursor.execute(
                 """
                 SELECT id
                 FROM scheduled_publications
                 WHERE summary_date = %s
                   AND available_at <= %s
-                  AND (
-                    status IN ('pending', 'retry')
-                    OR (status = 'sending' AND claimed_at < %s)
-                  )
+                  AND status IN ('pending', 'retry')
                 ORDER BY id
                 LIMIT %s
                 """,
-                (summary_date, db_now, stale_before, limit),
+                (summary_date, db_now, limit),
             )
             ids = [int(row["id"]) for row in cursor.fetchall()]
             claimed: list[tuple[int, int, str]] = []
@@ -733,12 +831,9 @@ class MySqlLifecycleStore:
                         claimed_at = %s,
                         updated_at = %s
                     WHERE id = %s
-                      AND (
-                        status IN ('pending', 'retry')
-                        OR (status = 'sending' AND claimed_at < %s)
-                      )
+                      AND status IN ('pending', 'retry')
                     """,
-                    (db_now, db_now, publication_id, stale_before),
+                    (db_now, db_now, publication_id),
                 )
                 if cursor.rowcount != 1:
                     continue
@@ -803,7 +898,7 @@ class MySqlLifecycleStore:
             )
             connection.commit()
 
-    def mark_publication_retry(
+    def mark_publication_review_required(
         self,
         publication_id: int,
         now: datetime,
@@ -815,11 +910,11 @@ class MySqlLifecycleStore:
             cursor.execute(
                 """
                 UPDATE scheduled_publications
-                SET status = 'retry', available_at = %s, claimed_at = NULL,
+                SET status = 'review_required', claimed_at = NULL,
                     last_error_message = %s, updated_at = %s
                 WHERE id = %s
                 """,
-                (db_now + timedelta(minutes=5), error[:1000], db_now, publication_id),
+                (error[:1000], db_now, publication_id),
             )
             connection.commit()
 
@@ -910,6 +1005,9 @@ class MySqlLifecycleStore:
                 WHERE archived.archived_date = %s
                   AND lifecycle.archive_verified = 1
                   AND lifecycle.archive_completed_at IS NOT NULL
+                  AND lifecycle.automatic_outcome IN (
+                    'summary_sent', 'automatic_summary_skipped'
+                  )
                 """,
                 (summary_date,),
             )
@@ -926,6 +1024,9 @@ class MySqlLifecycleStore:
                 WHERE summaries.summary_date = %s
                   AND lifecycle.archive_verified = 1
                   AND lifecycle.archive_completed_at IS NOT NULL
+                  AND lifecycle.automatic_outcome IN (
+                    'summary_sent', 'automatic_summary_skipped'
+                  )
                 """,
                 (summary_date,),
             )
@@ -937,11 +1038,39 @@ class MySqlLifecycleStore:
                 WHERE summary_date = %s
                   AND archive_verified = 1
                   AND archive_completed_at IS NOT NULL
+                  AND automatic_outcome IN (
+                    'summary_sent', 'automatic_summary_skipped'
+                  )
                 """,
                 (db_now, db_now, summary_date),
             )
             connection.commit()
             return deleted
+
+    def preview_cleanup(self, summary_date: str) -> int:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS item_count
+                FROM messages
+                JOIN archived_messages AS archived
+                  ON archived.chat_id = messages.chat_id
+                 AND archived.telegram_message_id = messages.telegram_message_id
+                JOIN daily_lifecycle AS lifecycle
+                  ON lifecycle.chat_id = messages.chat_id
+                 AND lifecycle.summary_date = archived.archived_date
+                WHERE archived.archived_date = %s
+                  AND lifecycle.archive_verified = 1
+                  AND lifecycle.archive_completed_at IS NOT NULL
+                  AND lifecycle.automatic_outcome IN (
+                    'summary_sent', 'automatic_summary_skipped'
+                  )
+                """,
+                (summary_date,),
+            )
+            row = cursor.fetchone()
+            return int(row["item_count"]) if row else 0
 
     def _utc_day_bounds(self, summary_date: str) -> tuple[datetime, datetime]:
         local_start = datetime.fromisoformat(summary_date).replace(tzinfo=self.timezone)
@@ -1087,6 +1216,13 @@ class MySqlMaintenanceStore:
                     """,
                     (cutoff,),
                 ),
+                "telegram_effects": (
+                    """
+                    DELETE FROM telegram_effects
+                    WHERE status IN ('sent', 'review_required') AND updated_at < %s
+                    """,
+                    (cutoff,),
+                ),
                 "scheduled_publications": (
                     """
                     DELETE FROM scheduled_publications
@@ -1136,9 +1272,26 @@ class MySqlMaintenanceStore:
                     cursor,
                     """
                     SELECT COUNT(*) AS item_count FROM scheduled_publications
-                    WHERE status = 'sending' AND claimed_at < %s
+                    WHERE status = 'review_required'
+                       OR (status = 'sending' AND claimed_at < %s)
                     """,
                     (db_now - timedelta(minutes=10),),
+                ),
+                "failed_updates": self._count(
+                    cursor,
+                    """
+                    SELECT COUNT(*) AS item_count FROM telegram_updates
+                    WHERE status = 'failed' AND updated_at >= %s
+                    """,
+                    (db_now - timedelta(days=1),),
+                ),
+                "review_required_effects": self._count(
+                    cursor,
+                    """
+                    SELECT COUNT(*) AS item_count FROM telegram_effects
+                    WHERE status = 'review_required'
+                    """,
+                    (),
                 ),
                 "unverified_archives": self._count(
                     cursor,

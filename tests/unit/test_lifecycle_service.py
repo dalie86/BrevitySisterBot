@@ -13,6 +13,7 @@ class FakeStore:
         self.sent_ids = set()
         self.archive_verified = False
         self.deleted = 0
+        self.review_required = []
 
     def enabled_chats(self):
         return list(self.enabled)
@@ -32,8 +33,8 @@ class FakeStore:
     def mark_publication_sent(self, publication_id, telegram_message_id, now):
         self.sent_ids.add(publication_id)
 
-    def mark_publication_retry(self, publication_id, now, error):
-        return None
+    def mark_publication_review_required(self, publication_id, now, error):
+        self.review_required.append((publication_id, error))
 
     def archive_day(self, summary_date, now, retention_days):
         self.archive_verified = True
@@ -45,12 +46,18 @@ class FakeStore:
         self.deleted = 5
         return self.deleted
 
+    def preview_cleanup(self, summary_date):
+        return 5 if self.archive_verified else 0
+
 
 class FakeTelegram:
     def __init__(self) -> None:
         self.sent = []
+        self.error = None
 
     def send_message(self, chat_id, text, reply_markup=None):
+        if self.error is not None:
+            raise self.error
         self.sent.append((chat_id, text))
         return 100 + len(self.sent)
 
@@ -102,5 +109,26 @@ def test_archive_then_cleanup_deletes_only_verified_rows() -> None:
     archived = lifecycle.archive_day(NOW)
     cleaned = lifecycle.cleanup_day(NOW)
 
-    assert archived.archived_messages == 5
+    assert archived.archived_messages == 10
     assert cleaned.deleted_messages == 5
+
+
+def test_cleanup_dry_run_does_not_delete_rows() -> None:
+    lifecycle, store, _ = make_service()
+    store.archive_verified = True
+
+    report = lifecycle.cleanup_day(NOW, dry_run=True)
+
+    assert report.deleted_messages == 5
+    assert store.deleted == 0
+
+
+def test_ambiguous_publication_failure_requires_review_not_retry() -> None:
+    lifecycle, store, telegram = make_service()
+    telegram.error = TimeoutError("ambiguous")
+
+    report = lifecycle.publish_day(NOW)
+
+    assert report.errors == 1
+    assert store.review_required == [(7, "ambiguous")]
+    assert store.sent_ids == set()

@@ -19,6 +19,7 @@ from app.repositories.mysql import (
     MySqlMessageRepository,
     MySqlSummaryRepository,
     MySqlSummarySelectionRepository,
+    MySqlTelegramEffectRepository,
     MySqlTrackedChatRepository,
     MySqlUpdateRepository,
 )
@@ -27,6 +28,7 @@ from app.services.group_updates import GroupUpdateHandler
 from app.services.lifecycle import JobReport, LifecycleService
 from app.services.on_demand import OnDemandSummaryHandler, OnDemandSummaryService
 from app.services.summaries import SummaryService
+from app.services.telegram_effects import DurableTelegramGateway, telegram_update_scope
 from app.services.updates import UpdateService
 
 COMMANDS = {"recover", "prepare", "publish", "archive", "cleanup", "purge", "audit"}
@@ -34,8 +36,12 @@ COMMANDS = {"recover", "prepare", "publish", "archive", "cleanup", "purge", "aud
 
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
-    if len(arguments) != 1 or arguments[0] not in COMMANDS:
-        print(f"Usage: python -m app.jobs.cli {'|'.join(sorted(COMMANDS))}", file=sys.stderr)
+    dry_run = arguments == ["cleanup", "--dry-run"]
+    if not dry_run and (len(arguments) != 1 or arguments[0] not in COMMANDS):
+        print(
+            f"Usage: python -m app.jobs.cli {'|'.join(sorted(COMMANDS))} [--dry-run for cleanup]",
+            file=sys.stderr,
+        )
         return 2
     load_dotenv()
     try:
@@ -53,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"command": command, "status": "already_running"}))
         return 0
     try:
-        result = _run_command(command, settings, database, now)
+        result = _run_command(command, settings, database, now, dry_run=dry_run)
     finally:
         locks.release(f"brevity:{command}", owner_token)
 
@@ -72,8 +78,10 @@ def _run_command(
     settings: Settings,
     database: MySqlDatabase,
     now: datetime,
+    *,
+    dry_run: bool = False,
 ) -> JobReport | int | dict[str, int | bool]:
-    telegram = TelegramClient(settings.telegram_bot_token)
+    raw_telegram = TelegramClient(settings.telegram_bot_token)
     messages = MySqlMessageRepository(database.connect)
     members = MySqlMemberRepository(database.connect)
     chats = MySqlTrackedChatRepository(database.connect)
@@ -94,6 +102,11 @@ def _run_command(
         )
         return maintenance.purge(now) if command == "purge" else maintenance.audit(now)
     if command == "recover":
+        telegram = DurableTelegramGateway(
+            raw=raw_telegram,
+            effects=MySqlTelegramEffectRepository(database.connect),
+            now=lambda: datetime.now(timezone.utc),
+        )
         on_demand_requests = OnDemandSummaryService(
             summaries=summaries,
             telegram=telegram,
@@ -120,9 +133,10 @@ def _run_command(
         )
 
         def handle(payload: dict) -> None:
-            update = parse_update(payload)
-            group_handler(update)
-            private_handler(update)
+            with telegram_update_scope(int(payload["update_id"])):
+                update = parse_update(payload)
+                group_handler(update)
+                private_handler(update)
 
         return UpdateService(
             MySqlUpdateRepository(database.connect),
@@ -132,15 +146,16 @@ def _run_command(
     lifecycle = LifecycleService(
         store=MySqlLifecycleStore(database.connect, settings.timezone),
         summaries=summaries,
-        telegram=telegram,
+        telegram=raw_telegram,
         timezone_name=settings.timezone,
         retention_days=settings.archive_retention_days,
     )
+    if command == "cleanup":
+        return lifecycle.cleanup_day(now, dry_run=dry_run)
     return {
         "prepare": lifecycle.prepare_day,
         "publish": lifecycle.publish_day,
         "archive": lifecycle.archive_day,
-        "cleanup": lifecycle.cleanup_day,
     }[command](now)
 
 

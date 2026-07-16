@@ -19,6 +19,20 @@ CREATE TABLE IF NOT EXISTS telegram_updates (
     KEY idx_updates_queue (status, available_at, claimed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS telegram_effects (
+    effect_key VARCHAR(191) PRIMARY KEY,
+    update_id BIGINT NOT NULL,
+    method VARCHAR(64) NOT NULL,
+    payload_hash CHAR(64) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    telegram_message_id BIGINT,
+    last_error_message VARCHAR(1000),
+    created_at DATETIME(6) NOT NULL,
+    updated_at DATETIME(6) NOT NULL,
+    KEY idx_telegram_effects_update (update_id, status),
+    KEY idx_telegram_effects_review (status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS tracked_chats (
     chat_id BIGINT PRIMARY KEY,
     title VARCHAR(255) NOT NULL,

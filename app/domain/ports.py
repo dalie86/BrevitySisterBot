@@ -44,6 +44,9 @@ class UpdateRepository(Protocol):
     ) -> None:
         raise NotImplementedError
 
+    def fail(self, update_id: int, now: datetime, error: str) -> None:
+        raise NotImplementedError
+
 
 class MessageRepository(Protocol):
     def add(self, message: StoredMessage) -> bool:
@@ -134,6 +137,9 @@ class TelegramGateway(Protocol):
         raise NotImplementedError
 
     def get_chat_member(self, chat_id: int, user_id: int) -> str:
+        raise NotImplementedError
+
+    def answer_callback_query(self, callback_id: str) -> None:
         raise NotImplementedError
 
 

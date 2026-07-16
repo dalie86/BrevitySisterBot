@@ -96,6 +96,7 @@ wait_for_command config
 set install_command [format {
     cd %s &&
     test -f .env &&
+    /bin/sh scripts/backup_db.sh &&
     if [ ! -x .venv/bin/python ]; then %s -m venv .venv; fi &&
     .venv/bin/python -m pip install --disable-pip-version-check -e . &&
     .venv/bin/python scripts/migrate.py &&

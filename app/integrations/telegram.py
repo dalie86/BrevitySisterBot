@@ -65,6 +65,8 @@ class TelegramClient:
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
         result = self._call("sendMessage", payload)
+        if not isinstance(result, dict):
+            raise TelegramApiError("Telegram sendMessage response is invalid")
         return int(result["message_id"])
 
     def get_chat_member(self, chat_id: int, user_id: int) -> str:
@@ -72,9 +74,14 @@ class TelegramClient:
             "getChatMember",
             {"chat_id": chat_id, "user_id": user_id},
         )
+        if not isinstance(result, dict):
+            raise TelegramApiError("Telegram getChatMember response is invalid")
         return str(result["status"])
 
-    def _call(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def answer_callback_query(self, callback_id: str) -> None:
+        self._call("answerCallbackQuery", {"callback_query_id": callback_id})
+
+    def _call(self, method: str, payload: dict[str, Any]) -> Any:
         request = urllib.request.Request(
             url=f"{self.base_url}/{method}",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -98,8 +105,8 @@ class TelegramClient:
         if not body.get("ok"):
             raise TelegramApiError(str(body.get("description", "Telegram API error")))
         result = body.get("result")
-        if not isinstance(result, dict):
-            raise TelegramApiError("Telegram API response has no result object")
+        if result is None:
+            raise TelegramApiError("Telegram API response has no result")
         return result
 
 

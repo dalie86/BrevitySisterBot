@@ -10,6 +10,7 @@ def test_initial_migration_defines_required_tables_and_unique_keys() -> None:
     sql = files[0].read_text(encoding="utf-8")
     required_tables = {
         "telegram_updates",
+        "telegram_effects",
         "tracked_chats",
         "chat_members",
         "messages",

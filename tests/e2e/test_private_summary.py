@@ -35,6 +35,7 @@ class FakeTelegram:
     def __init__(self) -> None:
         self.sent = []
         self.membership = {}
+        self.answered_callbacks = []
 
     def send_message(self, chat_id, text, reply_markup=None):
         self.sent.append((chat_id, text, reply_markup))
@@ -42,6 +43,9 @@ class FakeTelegram:
 
     def get_chat_member(self, chat_id, user_id):
         return self.membership.get((chat_id, user_id), "left")
+
+    def answer_callback_query(self, callback_id):
+        self.answered_callbacks.append(callback_id)
 
 
 class FakeSummaryService:
@@ -137,3 +141,4 @@ def test_callback_rechecks_membership_before_private_delivery() -> None:
 
     assert summaries.calls == []
     assert "не состоите" in telegram.sent[-1][1]
+    assert telegram.answered_callbacks == ["callback"]

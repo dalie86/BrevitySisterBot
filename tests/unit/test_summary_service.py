@@ -170,3 +170,14 @@ def test_on_demand_cache_does_not_replace_scheduled_summary_record() -> None:
     assert scheduled.outcome == "generated"
     assert llm.call_count == 2
     assert len(summaries.saved) == 2
+
+
+def test_generated_summary_fits_single_telegram_message() -> None:
+    huge = "x" * 6000
+    llm = FakeLlm('{"headline":"Главное","topics":[{"title":"Тема","details":"' + huge + '"}]}')
+    service, _, _ = make_service(5, llm)
+
+    result = service.generate(-1001, SummaryKind.ON_DEMAND, 42, NOW)
+
+    assert len(result.text) <= 3900
+    assert result.text.endswith("…")

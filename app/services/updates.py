@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Callable
 
+from app.domain.models import QueuedUpdate
 from app.domain.ports import UpdateRepository
 
 UpdateHandler = Callable[[dict], None]
@@ -24,11 +25,13 @@ class UpdateService:
         *,
         lease_seconds: int = 300,
         retry_delay: timedelta = timedelta(minutes=5),
+        max_attempts: int = 5,
     ) -> None:
         self.updates = updates
         self.handler = handler
         self.lease_seconds = lease_seconds
         self.retry_delay = retry_delay
+        self.max_attempts = max_attempts
 
     def accept(self, payload: dict, now: datetime) -> AcceptResult:
         update_id = int(payload["update_id"])
@@ -42,25 +45,28 @@ class UpdateService:
         update = self.updates.claim(update_id, now, self.lease_seconds)
         if update is None:
             return False
-        return self._process_claimed(update.update_id, update.payload, now)
+        return self.process_claimed(update, now)
 
     def recover(self, now: datetime, limit: int = 100) -> int:
         processed = 0
         for update in self.updates.claim_available(now, limit):
-            if self._process_claimed(update.update_id, update.payload, now):
+            if self.process_claimed(update, now):
                 processed += 1
         return processed
 
-    def _process_claimed(self, update_id: int, payload: dict, now: datetime) -> bool:
+    def process_claimed(self, update: QueuedUpdate, now: datetime) -> bool:
         try:
-            self.handler(payload)
+            self.handler(update.payload)
         except Exception as exc:
+            if update.attempt_count >= self.max_attempts:
+                self.updates.fail(update.update_id, now, str(exc))
+                return False
             self.updates.retry(
-                update_id,
+                update.update_id,
                 now,
                 now + self.retry_delay,
                 str(exc),
             )
             return False
-        self.updates.complete(update_id, now)
+        self.updates.complete(update.update_id, now)
         return True
