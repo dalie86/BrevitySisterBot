@@ -27,7 +27,10 @@ def test_content_import_falls_back_to_tomli_when_tomllib_is_unavailable() -> Non
         import sys
         from pathlib import Path
 
-        import tomllib as compatible_tomli
+        try:
+            import tomllib as compatible_tomli
+        except ModuleNotFoundError:
+            import tomli as compatible_tomli
 
         class BlockTomllib(importlib.abc.MetaPathFinder):
             def find_spec(self, fullname, path=None, target=None):
