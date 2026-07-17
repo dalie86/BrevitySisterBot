@@ -75,14 +75,10 @@ class DurableTelegramGateway:
         sequence = _effect_counter.get()
         _effect_counter.set(sequence + 1)
         effect_key = f"update:{update_id}:send_message:{sequence}"
-        payload_hash = _payload_hash(
-            {
-                "chat_id": chat_id,
-                "text": text,
-                "reply_markup": reply_markup,
-                "parse_mode": parse_mode,
-            }
-        )
+        payload = {"chat_id": chat_id, "text": text, "reply_markup": reply_markup}
+        if parse_mode is not None:
+            payload["parse_mode"] = parse_mode
+        payload_hash = _payload_hash(payload)
         current = self.now()
         existing = self.effects.begin(
             effect_key,
