@@ -63,13 +63,24 @@ class MessageRepository(Protocol):
 
 
 class ChatRepository(Protocol):
-    def enable(self, chat_id: int, title: str, now: datetime) -> None:
+    def enable(self, chat_id: int, title: str, now: datetime) -> str:
         raise NotImplementedError
 
     def disable(self, chat_id: int, now: datetime) -> None:
         raise NotImplementedError
 
     def is_tracked(self, chat_id: int) -> bool:
+        raise NotImplementedError
+
+    def resolve_private_link(self, token: str) -> tuple[int, str] | None:
+        raise NotImplementedError
+
+
+class ChatShareRequestRepository(Protocol):
+    def create(self, user_id: int, now: datetime) -> int:
+        raise NotImplementedError
+
+    def consume(self, request_id: int, user_id: int, now: datetime) -> bool:
         raise NotImplementedError
 
 
@@ -85,6 +96,26 @@ class MemberRepository(Protocol):
         raise NotImplementedError
 
     def confirm_summary_link(self, chat_id: int, user_id: int, now: datetime) -> None:
+        raise NotImplementedError
+
+    def remember_group(
+        self,
+        chat_id: int,
+        user_id: int,
+        username: str,
+        full_name: str,
+        now: datetime,
+    ) -> None:
+        raise NotImplementedError
+
+    def record_membership(
+        self,
+        chat_id: int,
+        user_id: int,
+        status: str,
+        is_member: bool,
+        now: datetime,
+    ) -> None:
         raise NotImplementedError
 
     def linked_groups(self, user_id: int) -> Sequence[tuple[int, str]]:

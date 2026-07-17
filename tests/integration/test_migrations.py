@@ -5,8 +5,6 @@ from app.repositories.mysql import migration_files
 
 def test_initial_migration_defines_required_tables_and_unique_keys() -> None:
     files = migration_files(Path("migrations"))
-    assert [path.name for path in files] == ["001_initial.sql"]
-
     sql = files[0].read_text(encoding="utf-8")
     required_tables = {
         "telegram_updates",
@@ -28,6 +26,20 @@ def test_initial_migration_defines_required_tables_and_unique_keys() -> None:
     assert "UNIQUE KEY uq_messages_chat_message (chat_id, telegram_message_id)" in sql
     assert "UNIQUE KEY uq_scheduled_publication_day (chat_id, summary_date)" in sql
     assert "CHARSET=utf8mb4" in sql
+
+
+def test_private_onboarding_migration_is_additive() -> None:
+    files = migration_files(Path("migrations"))
+    assert [path.name for path in files] == [
+        "001_initial.sql",
+        "002_private_summary_onboarding.sql",
+    ]
+
+    sql = files[1].read_text(encoding="utf-8")
+    assert "ADD COLUMN private_link_token CHAR(32) NULL" in sql
+    assert "MODIFY private_link_token CHAR(32) NOT NULL" in sql
+    assert "UNIQUE KEY uq_tracked_chats_private_link" in sql
+    assert "CREATE TABLE chat_share_requests" in sql
 
 
 def test_migration_files_are_sorted_and_only_include_sql(tmp_path: Path) -> None:

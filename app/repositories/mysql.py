@@ -430,24 +430,33 @@ class MySqlTrackedChatRepository:
     def __init__(self, connection_factory: ConnectionFactory) -> None:
         self.connection_factory = connection_factory
 
-    def enable(self, chat_id: int, title: str, now: datetime) -> None:
+    def enable(self, chat_id: int, title: str, now: datetime) -> str:
         with _managed_connection(self.connection_factory) as connection:
             cursor = connection.cursor()
             db_now = _to_mysql_datetime(now)
+            private_link_token = secrets.token_hex(16)
             cursor.execute(
                 """
             INSERT INTO tracked_chats (
                 chat_id, title, enabled, timezone, scheduled_publish_time,
-                created_at, updated_at
-            ) VALUES (%s, %s, 1, 'Europe/Moscow', '21:00:00', %s, %s)
+                private_link_token, created_at, updated_at
+            ) VALUES (%s, %s, 1, 'Europe/Moscow', '21:00:00', %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 title = VALUES(title),
                 enabled = 1,
                 updated_at = VALUES(updated_at)
             """,
-                (chat_id, title, db_now, db_now),
+                (chat_id, title, private_link_token, db_now, db_now),
             )
+            cursor.execute(
+                "SELECT private_link_token FROM tracked_chats WHERE chat_id = %s",
+                (chat_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise RuntimeError("Tracked chat disappeared after enable")
             connection.commit()
+            return str(row["private_link_token"])
 
     def disable(self, chat_id: int, now: datetime) -> None:
         with _managed_connection(self.connection_factory) as connection:
@@ -470,6 +479,69 @@ class MySqlTrackedChatRepository:
                 (chat_id,),
             )
             return cursor.fetchone() is not None
+
+    def resolve_private_link(self, token: str) -> tuple[int, str] | None:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT chat_id, title, private_link_token
+                FROM tracked_chats
+                WHERE private_link_token = %s
+                """,
+                (token,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return int(row["chat_id"]), str(row["title"])
+
+
+class MySqlChatShareRequestRepository:
+    def __init__(self, connection_factory: ConnectionFactory) -> None:
+        self.connection_factory = connection_factory
+
+    def create(self, user_id: int, now: datetime) -> int:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            db_now = _to_mysql_datetime(now)
+            for attempt in range(5):
+                request_id = secrets.randbelow(2**32) - 2**31
+                try:
+                    cursor.execute(
+                        """
+                        INSERT INTO chat_share_requests (
+                            request_id, user_id, expires_at, created_at
+                        ) VALUES (%s, %s, %s, %s)
+                        """,
+                        (request_id, user_id, db_now + timedelta(hours=1), db_now),
+                    )
+                except pymysql.err.IntegrityError as exc:
+                    if exc.args[0] == 1062 and attempt < 4:
+                        continue
+                    raise
+                connection.commit()
+                return request_id
+        raise RuntimeError("Unable to create chat share request")
+
+    def consume(self, request_id: int, user_id: int, now: datetime) -> bool:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            db_now = _to_mysql_datetime(now)
+            cursor.execute(
+                """
+                UPDATE chat_share_requests
+                SET used_at = %s
+                WHERE request_id = %s
+                  AND user_id = %s
+                  AND expires_at >= %s
+                  AND used_at IS NULL
+                """,
+                (db_now, request_id, user_id, db_now),
+            )
+            consumed = cursor.rowcount == 1
+            connection.commit()
+            return consumed
 
 
 class MySqlMemberRepository:
@@ -511,6 +583,75 @@ class MySqlMemberRepository:
             WHERE chat_id = %s AND user_id = %s
             """,
                 (_to_mysql_datetime(now), chat_id, user_id),
+            )
+            connection.commit()
+
+    def remember_group(
+        self,
+        chat_id: int,
+        user_id: int,
+        username: str,
+        full_name: str,
+        now: datetime,
+    ) -> None:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            db_now = _to_mysql_datetime(now)
+            cursor.execute(
+                """
+                INSERT INTO chat_members (
+                    chat_id, user_id, username, full_name,
+                    first_seen_at, last_seen_at, summary_linked_at,
+                    last_membership_check_at, last_membership_status
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    username = VALUES(username),
+                    full_name = VALUES(full_name),
+                    last_seen_at = VALUES(last_seen_at),
+                    summary_linked_at = VALUES(summary_linked_at),
+                    last_membership_check_at = VALUES(last_membership_check_at),
+                    last_membership_status = VALUES(last_membership_status)
+                """,
+                (
+                    chat_id,
+                    user_id,
+                    username,
+                    full_name,
+                    db_now,
+                    db_now,
+                    db_now,
+                    db_now,
+                    "member",
+                ),
+            )
+            connection.commit()
+
+    def record_membership(
+        self,
+        chat_id: int,
+        user_id: int,
+        status: str,
+        is_member: bool,
+        now: datetime,
+    ) -> None:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                UPDATE chat_members
+                SET last_membership_check_at = %s,
+                    last_membership_status = %s,
+                    summary_linked_at = CASE
+                        WHEN %s = 1 THEN summary_linked_at ELSE NULL END
+                WHERE chat_id = %s AND user_id = %s
+                """,
+                (
+                    _to_mysql_datetime(now),
+                    status,
+                    int(is_member),
+                    chat_id,
+                    user_id,
+                ),
             )
             connection.commit()
 
@@ -1207,6 +1348,10 @@ class MySqlMaintenanceStore:
                 ),
                 "summary_selections": (
                     "DELETE FROM summary_selections WHERE expires_at < %s",
+                    (db_now,),
+                ),
+                "chat_share_requests": (
+                    "DELETE FROM chat_share_requests WHERE expires_at < %s",
                     (db_now,),
                 ),
                 "telegram_updates": (
