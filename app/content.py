@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import re
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 PLACEHOLDER = re.compile(r"\{\{([a-z_]+)\}\}")
 REQUIRED: dict[tuple[str, str], frozenset[str]] = {

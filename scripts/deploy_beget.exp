@@ -33,7 +33,7 @@ if {![info exists config(BEGET_REMOTE_DIR)] || $config(BEGET_REMOTE_DIR) eq ""} 
     set config(BEGET_REMOTE_DIR) "~/brevity.prosto-kosmos.ru"
 }
 if {![info exists config(BEGET_PYTHON)] || $config(BEGET_PYTHON) eq ""} {
-    set config(BEGET_PYTHON) "python3.11"
+    set config(BEGET_PYTHON) "python3.10"
 }
 
 set ssh_base [list ssh -o StrictHostKeyChecking=accept-new -p $config(BEGET_SSH_PORT)]

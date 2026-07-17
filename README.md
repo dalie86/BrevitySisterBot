@@ -64,10 +64,10 @@ API-вызова. Recovery пропускает уже начатый эффек
 
 ## Локальная установка
 
-Требуется Python 3.11+ и MySQL 8-compatible.
+Требуется Python 3.10+ и MySQL 8-compatible.
 
 ```bash
-python3.11 -m venv .venv
+python3.10 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 cp .env.example .env
 ```

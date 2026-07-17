@@ -37,6 +37,14 @@ def test_deploy_backs_up_before_running_migrations() -> None:
     assert script.index("scripts/backup_db.sh") < script.index("scripts/migrate.py")
 
 
+def test_beget_defaults_to_python_310() -> None:
+    example = Path("hosting.env.example").read_text(encoding="utf-8")
+    script = Path("scripts/deploy_beget.exp").read_text(encoding="utf-8")
+
+    assert "BEGET_PYTHON=python3.10" in example
+    assert 'set config(BEGET_PYTHON) "python3.10"' in script
+
+
 def test_public_wsgi_entry_adds_project_root_without_secrets() -> None:
     entry = Path("public_html/passenger_wsgi.py").read_text(encoding="utf-8")
 

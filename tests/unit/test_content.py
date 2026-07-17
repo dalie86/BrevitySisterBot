@@ -1,3 +1,6 @@
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -15,6 +18,43 @@ def test_repository_copy_catalog_loads_and_renders() -> None:
         topic_title="Релиз",
         topic_details="Версия согласована.",
     ) == "• Релиз\nВерсия согласована."
+
+
+def test_content_import_falls_back_to_tomli_when_tomllib_is_unavailable() -> None:
+    script = textwrap.dedent(
+        """
+        import importlib.abc
+        import sys
+        from pathlib import Path
+
+        import tomllib as compatible_tomli
+
+        class BlockTomllib(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == "tomllib":
+                    raise ModuleNotFoundError("tomllib blocked for Python 3.10 simulation")
+                return None
+
+        sys.modules.pop("tomllib", None)
+        sys.modules["tomli"] = compatible_tomli
+        sys.meta_path.insert(0, BlockTomllib())
+
+        from app.content import BotCopy
+
+        catalog = BotCopy.load(Path("content/bot_copy.ru.toml"))
+        print(catalog.value("buttons", "get_private_summary"))
+        """
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "Получить сводку лично"
 
 
 def test_catalog_rejects_missing_required_placeholder(tmp_path: Path) -> None:
