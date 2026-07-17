@@ -1,48 +1,99 @@
 from datetime import datetime, timezone
+from pathlib import Path
 
+import pytest
+
+from app.content import BotCopy
 from app.domain.models import GeneratedSummary, SummaryStatus
 from app.services.on_demand import OnDemandSummaryService
 
 
 NOW = datetime(2026, 7, 16, 18, 0, tzinfo=timezone.utc)
+COPY = BotCopy.load(Path("content/bot_copy.ru.toml"))
 
 
 class FakeTelegram:
     def __init__(self) -> None:
         self.sent = []
 
-    def send_message(self, chat_id, text, reply_markup=None):
-        self.sent.append((chat_id, text))
+    def send_message(self, chat_id, text, reply_markup=None, parse_mode=None):
+        self.sent.append((chat_id, text, reply_markup, parse_mode))
         return len(self.sent)
 
 
 class FakeSummaries:
+    def __init__(self, *, outcome="generated") -> None:
+        self.outcome = outcome
+
     def generate(self, chat_id, kind, requester_user_id, now):
         return GeneratedSummary(
             chat_id=chat_id,
             summary_date="2026-07-16",
             kind=kind,
             source_hash="hash",
-            text="готовая сводка",
+            text="<b>готовая сводка</b>",
             status=SummaryStatus.PREPARED,
+            outcome=self.outcome,
         )
 
 
-def test_group_request_acknowledges_then_posts_result_to_group() -> None:
+def make_service(outcome="generated"):
     telegram = FakeTelegram()
     service = OnDemandSummaryService(
-        summaries=FakeSummaries(),
+        summaries=FakeSummaries(outcome=outcome),
         telegram=telegram,
+        copy=COPY,
         now=lambda: NOW,
     )
+    return service, telegram
+
+
+def test_request_acknowledges_then_posts_html_result() -> None:
+    service, telegram = make_service()
 
     service.request(chat_id=-1001, requester_user_id=42, destination_chat_id=-1001)
 
     assert telegram.sent == [
-        (
-            -1001,
-            "Запрос принят. Подготовка сводки может занять до 1–2 минут. "
-            "Пожалуйста, не отправляйте команду повторно.",
-        ),
-        (-1001, "готовая сводка"),
+        (-1001, COPY.value("messages", "summary_accepted"), None, None),
+        (-1001, "<b>готовая сводка</b>", None, "HTML"),
     ]
+    assert "до 2 минут" in telegram.sent[0][1]
+
+
+def test_acceptance_can_remove_picker_keyboard() -> None:
+    service, telegram = make_service()
+
+    service.request(
+        chat_id=-1001,
+        requester_user_id=42,
+        destination_chat_id=42,
+        ack_reply_markup={"remove_keyboard": True},
+    )
+
+    assert telegram.sent[0] == (
+        42,
+        COPY.value("messages", "summary_accepted"),
+        {"remove_keyboard": True},
+        None,
+    )
+    assert telegram.sent[1][2] is None
+
+
+@pytest.mark.parametrize(
+    ("outcome", "copy_key"),
+    [
+        ("preparing", "summary_in_progress"),
+        ("insufficient_messages", "not_enough_messages"),
+    ],
+)
+def test_non_generated_outcomes_use_toml_copy(outcome, copy_key) -> None:
+    service, telegram = make_service(outcome)
+
+    service.request(chat_id=-1001, requester_user_id=42, destination_chat_id=42)
+
+    assert telegram.sent[-1] == (
+        42,
+        COPY.value("messages", copy_key),
+        None,
+        None,
+    )

@@ -3,8 +3,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 
-from app.domain.models import SummaryKind
+from app.content import BotCopy
+from app.domain.models import SummaryKind, TelegramMembership
 from app.domain.ports import (
+    ChatRepository,
+    ChatShareRequestRepository,
     MemberRepository,
     SummarySelectionRepository,
     TelegramGateway,
@@ -14,12 +17,6 @@ from app.services.summaries import SummaryService
 
 NowFactory = Callable[[], datetime]
 
-ACKNOWLEDGEMENT = (
-    "Запрос принят. Подготовка сводки может занять до 1–2 минут. "
-    "Пожалуйста, не отправляйте команду повторно."
-)
-MEMBER_STATUSES = {"creator", "administrator", "member", "restricted"}
-
 
 class OnDemandSummaryService:
     def __init__(
@@ -27,10 +24,12 @@ class OnDemandSummaryService:
         *,
         summaries: SummaryService,
         telegram: TelegramGateway,
+        copy: BotCopy,
         now: NowFactory,
     ) -> None:
         self.summaries = summaries
         self.telegram = telegram
+        self.copy = copy
         self.now = now
 
     def request(
@@ -39,8 +38,13 @@ class OnDemandSummaryService:
         chat_id: int,
         requester_user_id: int,
         destination_chat_id: int,
+        ack_reply_markup: dict | None = None,
     ) -> None:
-        self.telegram.send_message(destination_chat_id, ACKNOWLEDGEMENT)
+        self.telegram.send_message(
+            destination_chat_id,
+            self.copy.value("messages", "summary_accepted"),
+            reply_markup=ack_reply_markup,
+        )
         result = self.summaries.generate(
             chat_id,
             SummaryKind.ON_DEMAND,
@@ -50,35 +54,44 @@ class OnDemandSummaryService:
         if result.outcome == "preparing":
             self.telegram.send_message(
                 destination_chat_id,
-                "Сводка по этим сообщениям уже готовится. Повторять запрос не нужно.",
+                self.copy.value("messages", "summary_in_progress"),
             )
             return
         if result.outcome == "insufficient_messages":
             self.telegram.send_message(
                 destination_chat_id,
-                "Пока недостаточно сообщений для сводки. Нужно минимум 5 сообщений за сегодня.",
+                self.copy.value("messages", "not_enough_messages"),
             )
             return
-        self.telegram.send_message(destination_chat_id, result.text)
+        self.telegram.send_message(destination_chat_id, result.text, parse_mode="HTML")
 
 
 class OnDemandSummaryHandler:
     def __init__(
         self,
         *,
+        chats: ChatRepository,
         members: MemberRepository,
+        share_requests: ChatShareRequestRepository,
         selections: SummarySelectionRepository,
         telegram: TelegramGateway,
         summaries: SummaryService,
+        copy: BotCopy,
+        bot_user_id: int,
         now: NowFactory,
     ) -> None:
+        self.chats = chats
         self.members = members
+        self.share_requests = share_requests
         self.selections = selections
         self.telegram = telegram
+        self.copy = copy
+        self.bot_user_id = bot_user_id
         self.now = now
         self.requests = OnDemandSummaryService(
             summaries=summaries,
             telegram=telegram,
+            copy=copy,
             now=now,
         )
 
@@ -86,33 +99,71 @@ class OnDemandSummaryHandler:
         if update.callback is not None:
             self._handle_callback(update)
             return
-        message = update.message
-        if (
-            message is None
-            or message.chat_type != "private"
-            or message.user_id is None
-            or _command_name(message.text) != "/summary"
-        ):
+        if update.chat_shared is not None:
+            self._handle_chat_shared(update)
             return
-        groups = list(self.members.linked_groups(message.user_id))
-        if not groups:
-            self.telegram.send_message(
-                message.chat_id,
-                "Сначала запросите /summary внутри нужной группы, чтобы связать её с ботом.",
+        message = update.message
+        if message is None or message.chat_type != "private" or message.user_id is None:
+            return
+
+        token = _private_start_token(message.text)
+        if token is not None:
+            linked = self.chats.resolve_private_link(token)
+            if linked is None:
+                self.telegram.send_message(
+                    message.chat_id,
+                    self.copy.value("messages", "private_link_invalid"),
+                )
+                self._show_picker(message.user_id, message.chat_id)
+                return
+            self._verify_and_deliver(
+                chat_id=linked[0],
+                user_id=message.user_id,
+                username=message.username,
+                full_name=message.full_name,
+                destination_chat_id=message.chat_id,
             )
             return
+
+        if _command_name(message.text) != "/summary":
+            return
+        self._handle_private_summary(
+            user_id=message.user_id,
+            username=message.username,
+            full_name=message.full_name,
+            destination_chat_id=message.chat_id,
+        )
+
+    def _handle_private_summary(
+        self,
+        *,
+        user_id: int,
+        username: str,
+        full_name: str,
+        destination_chat_id: int,
+    ) -> None:
+        groups = [
+            group
+            for group in self.members.linked_groups(user_id)
+            if self._group_is_accessible(group[0], user_id)
+        ]
+        if not groups:
+            self._show_picker(user_id, destination_chat_id)
+            return
         if len(groups) == 1:
-            self._deliver_if_member(
-                user_id=message.user_id,
+            self._verify_and_deliver(
                 chat_id=groups[0][0],
-                destination_chat_id=message.chat_id,
+                user_id=user_id,
+                username=username,
+                full_name=full_name,
+                destination_chat_id=destination_chat_id,
             )
             return
 
         buttons = []
         current = self.now()
         for chat_id, title in groups:
-            token = self.selections.create(message.user_id, chat_id, current)
+            token = self.selections.create(user_id, chat_id, current)
             buttons.append(
                 [
                     {
@@ -122,8 +173,8 @@ class OnDemandSummaryHandler:
                 ]
             )
         self.telegram.send_message(
-            message.chat_id,
-            "Из какой группы подготовить сводку?",
+            destination_chat_id,
+            self.copy.value("messages", "choose_group_known"),
             reply_markup={"inline_keyboard": buttons},
         )
 
@@ -137,34 +188,139 @@ class OnDemandSummaryHandler:
         if chat_id is None:
             self.telegram.send_message(
                 callback.chat_id,
-                "Этот выбор устарел. Отправьте /summary ещё раз.",
+                self.copy.value("messages", "group_choice_expired"),
             )
             return
-        self._deliver_if_member(
+        self._verify_and_deliver(
             user_id=callback.user_id,
+            username="",
+            full_name="",
             chat_id=chat_id,
             destination_chat_id=callback.chat_id,
         )
 
-    def _deliver_if_member(
-        self,
-        *,
-        user_id: int,
-        chat_id: int,
-        destination_chat_id: int,
-    ) -> None:
-        status = self.telegram.get_chat_member(chat_id, user_id)
-        if status not in MEMBER_STATUSES:
+    def _handle_chat_shared(self, update: IncomingUpdate) -> None:
+        shared = update.chat_shared
+        if shared is None or not self.share_requests.consume(
+            shared.request_id, shared.user_id, self.now()
+        ):
+            return
+        if not self.chats.is_tracked(shared.shared_chat_id):
             self.telegram.send_message(
-                destination_chat_id,
-                "Сводка недоступна: вы больше не состоите в этой группе.",
+                shared.private_chat_id,
+                self.copy.value("messages", "selected_group_not_connected"),
             )
             return
+        self._verify_and_deliver(
+            chat_id=shared.shared_chat_id,
+            user_id=shared.user_id,
+            username="",
+            full_name="",
+            destination_chat_id=shared.private_chat_id,
+            remove_keyboard=True,
+        )
+
+    def _show_picker(self, user_id: int, destination_chat_id: int) -> None:
+        request_id = self.share_requests.create(user_id, self.now())
+        self.telegram.send_message(
+            destination_chat_id,
+            self.copy.value("messages", "choose_group_native"),
+            reply_markup=_picker_markup(
+                request_id,
+                self.copy.value("buttons", "choose_group"),
+            ),
+        )
+
+    def _group_is_accessible(self, chat_id: int, user_id: int) -> bool:
+        bot_membership = self.telegram.get_chat_member(chat_id, self.bot_user_id)
+        user_membership = self.telegram.get_chat_member(chat_id, user_id)
+        self._record_membership(chat_id, user_id, user_membership)
+        return bot_membership.is_admin and _membership_allowed(user_membership)
+
+    def _verify_and_deliver(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        username: str,
+        full_name: str,
+        destination_chat_id: int,
+        remove_keyboard: bool = False,
+    ) -> None:
+        bot_membership = self.telegram.get_chat_member(chat_id, self.bot_user_id)
+        if not bot_membership.is_admin:
+            self.telegram.send_message(
+                destination_chat_id,
+                self.copy.value("messages", "group_access_unverifiable"),
+            )
+            return
+        user_membership = self.telegram.get_chat_member(chat_id, user_id)
+        self._record_membership(chat_id, user_id, user_membership)
+        if not _membership_allowed(user_membership):
+            self.telegram.send_message(
+                destination_chat_id,
+                self.copy.value("messages", "membership_not_confirmed"),
+            )
+            return
+        self.members.remember_group(
+            chat_id,
+            user_id,
+            username,
+            full_name,
+            self.now(),
+        )
         self.requests.request(
             chat_id=chat_id,
             requester_user_id=user_id,
             destination_chat_id=destination_chat_id,
+            ack_reply_markup={"remove_keyboard": True} if remove_keyboard else None,
         )
+
+    def _record_membership(
+        self,
+        chat_id: int,
+        user_id: int,
+        membership: TelegramMembership,
+    ) -> None:
+        self.members.record_membership(
+            chat_id,
+            user_id,
+            membership.status,
+            membership.can_read,
+            self.now(),
+        )
+
+
+def _membership_allowed(membership: TelegramMembership) -> bool:
+    return membership.can_read
+
+
+def _private_start_token(text: str) -> str | None:
+    parts = text.strip().split(maxsplit=1)
+    if not parts or parts[0].split("@", 1)[0].lower() != "/start" or len(parts) != 2:
+        return None
+    payload = parts[1]
+    return payload.removeprefix("summary_") if payload.startswith("summary_") else None
+
+
+def _picker_markup(request_id: int, label: str) -> dict:
+    return {
+        "keyboard": [
+            [
+                {
+                    "text": label,
+                    "request_chat": {
+                        "request_id": request_id,
+                        "chat_is_channel": False,
+                        "bot_is_member": True,
+                        "request_title": True,
+                    },
+                }
+            ]
+        ],
+        "resize_keyboard": True,
+        "one_time_keyboard": True,
+    }
 
 
 def _command_name(text: str) -> str | None:
