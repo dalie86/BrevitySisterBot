@@ -81,3 +81,16 @@ def test_public_wsgi_entry_adds_project_root_without_secrets() -> None:
     assert "PROJECT_ROOT" in entry
     assert "app.web.production" in entry
     assert "TELEGRAM_BOT_TOKEN" not in entry
+
+
+def test_beget_crontab_uses_date_without_percent_escaping() -> None:
+    example = Path("crontab.beget.example").read_text(encoding="utf-8")
+    command_lines = [line for line in example.splitlines() if line and not line.startswith("#")]
+    rotate_line = next(line for line in command_lines if "rotate_logs.sh" in line)
+    dated_log_lines = [line for line in command_lines if "rotate_logs.sh" not in line]
+
+    assert re.search(r"\$\(\s*date\b[^)]*%", example) is None
+    assert len(dated_log_lines) == 9
+    assert example.count("$(date -I)") == 9
+    assert all(line.count("$(date -I)") == 1 for line in dated_log_lines)
+    assert re.search(r"\$\(\s*date\b", rotate_line) is None
