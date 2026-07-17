@@ -45,6 +45,32 @@ def test_beget_defaults_to_python_310() -> None:
     assert 'set config(BEGET_PYTHON) "python3.10"' in script
 
 
+def test_deploy_bootstraps_missing_venv_with_beget_virtualenv() -> None:
+    script = Path("scripts/deploy_beget.exp").read_text(encoding="utf-8")
+
+    assert "if [ ! -x .venv/bin/python ]; then" in script
+    assert "/usr/bin/virtualenv --copies -p %s --clear .venv" in script
+    assert "} $config(BEGET_REMOTE_DIR) $config(BEGET_PYTHON)]" in script
+    assert "%s -m venv .venv" not in script
+
+
+def test_deploy_ships_passenger_python_configuration() -> None:
+    config_path = Path("public_html/.htaccess")
+    script = Path("scripts/deploy_beget.exp").read_text(encoding="utf-8")
+
+    assert config_path.is_file()
+    assert config_path.read_text(encoding="utf-8").splitlines() == [
+        "PassengerEnabled On",
+        (
+            "PassengerPython "
+            "/home/p/pshech/brevity.prosto-kosmos.ru/.venv/bin/python"
+        ),
+    ]
+    assert "--exclude .htaccess" not in script
+    assert "--exclude public_html/.htaccess" not in script
+    assert "./ $target" in script
+
+
 def test_public_wsgi_entry_adds_project_root_without_secrets() -> None:
     entry = Path("public_html/passenger_wsgi.py").read_text(encoding="utf-8")
 
