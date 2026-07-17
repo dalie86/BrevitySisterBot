@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 
+from app.content import BotCopy
 from app.domain.models import StoredMessage
 from app.domain.ports import (
     ChatRepository,
@@ -25,6 +26,9 @@ class GroupUpdateHandler:
         members: MemberRepository,
         messages: MessageRepository,
         telegram: TelegramGateway,
+        access: AccessService,
+        copy: BotCopy,
+        telegram_bot_username: str,
         summary_request: SummaryRequest,
         now: NowFactory,
     ) -> None:
@@ -32,9 +36,11 @@ class GroupUpdateHandler:
         self.members = members
         self.messages = messages
         self.telegram = telegram
+        self.access = access
+        self.copy = copy
+        self.telegram_bot_username = telegram_bot_username
         self.summary_request = summary_request
         self.now = now
-        self.access = AccessService(chats, telegram)
 
     def __call__(self, update: IncomingUpdate) -> None:
         message = update.message
@@ -48,19 +54,41 @@ class GroupUpdateHandler:
         if command == "/start":
             self.telegram.send_message(
                 message.chat_id,
-                "Команды: /enable_daily, /disable_daily, /summary",
+                self.copy.value("messages", "group_commands"),
             )
             return
         if command == "/enable_daily":
-            self._change_group_setting(
-                lambda: self.access.enable_daily(
+            try:
+                token = self.access.enable_daily(
                     message.chat_id,
                     message.user_id,
                     message.chat_title,
                     current,
-                ),
+                )
+            except AccessDenied as exc:
+                self.telegram.send_message(
+                    message.chat_id,
+                    self.copy.value("messages", exc.copy_key),
+                )
+                return
+            self.telegram.send_message(
                 message.chat_id,
-                "Ежедневная сводка включена. Публикация — в 21:00 по Москве.",
+                self.copy.value("messages", "daily_enabled"),
+                reply_markup={
+                    "inline_keyboard": [
+                        [
+                            {
+                                "text": self.copy.value(
+                                    "buttons", "get_private_summary"
+                                ),
+                                "url": (
+                                    f"https://t.me/{self.telegram_bot_username}"
+                                    f"?start=summary_{token}"
+                                ),
+                            }
+                        ]
+                    ]
+                },
             )
             return
         if command == "/disable_daily":
@@ -71,17 +99,17 @@ class GroupUpdateHandler:
                     current,
                 ),
                 message.chat_id,
-                "Ежедневная публикация выключена. Буферизация сообщений продолжается.",
+                "daily_disabled",
             )
             return
         if command == "/summary":
             if not self.chats.is_tracked(message.chat_id):
                 self.telegram.send_message(
                     message.chat_id,
-                    "Сначала администратор должен подключить группу через /enable_daily.",
+                    self.copy.value("messages", "group_not_connected"),
                 )
                 return
-            self.members.observe(
+            self.members.remember_group(
                 message.chat_id,
                 message.user_id,
                 message.username,
@@ -96,7 +124,7 @@ class GroupUpdateHandler:
         if not self.chats.is_tracked(message.chat_id) or not message.text:
             return
 
-        self.members.observe(
+        self.members.remember_group(
             message.chat_id,
             message.user_id,
             message.username,
@@ -119,14 +147,20 @@ class GroupUpdateHandler:
         self,
         operation: Callable[[], None],
         chat_id: int,
-        success_text: str,
+        success_copy_key: str,
     ) -> None:
         try:
             operation()
         except AccessDenied as exc:
-            self.telegram.send_message(chat_id, str(exc))
+            self.telegram.send_message(
+                chat_id,
+                self.copy.value("messages", exc.copy_key),
+            )
             return
-        self.telegram.send_message(chat_id, success_text)
+        self.telegram.send_message(
+            chat_id,
+            self.copy.value("messages", success_copy_key),
+        )
 
 
 def _command_name(text: str) -> str | None:

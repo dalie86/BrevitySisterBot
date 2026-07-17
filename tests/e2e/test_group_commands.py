@@ -1,6 +1,10 @@
 from datetime import datetime, timezone
+from pathlib import Path
 
+from app.content import BotCopy
+from app.domain.models import TelegramMembership
 from app.integrations.telegram import parse_update
+from app.services.access import AccessService
 from app.services.group_updates import GroupUpdateHandler
 
 
@@ -8,10 +12,12 @@ class FakeChats:
     def __init__(self) -> None:
         self.tracked = set()
         self.enabled = {}
+        self.next_token = "a" * 32
 
-    def enable(self, chat_id, title, now) -> None:
+    def enable(self, chat_id, title, now) -> str:
         self.tracked.add(chat_id)
         self.enabled[chat_id] = True
+        return self.next_token
 
     def disable(self, chat_id, now) -> None:
         self.enabled[chat_id] = False
@@ -24,12 +30,16 @@ class FakeMembers:
     def __init__(self) -> None:
         self.observed = []
         self.summary_links = []
+        self.remembered = []
 
     def observe(self, chat_id, user_id, username, full_name, now) -> None:
         self.observed.append((chat_id, user_id))
 
     def confirm_summary_link(self, chat_id, user_id, now) -> None:
         self.summary_links.append((chat_id, user_id))
+
+    def remember_group(self, chat_id, user_id, username, full_name, now) -> None:
+        self.remembered.append((chat_id, user_id))
 
 
 class FakeMessages:
@@ -43,14 +53,17 @@ class FakeMessages:
 
 class FakeTelegram:
     def __init__(self) -> None:
-        self.status = "administrator"
+        self.memberships = {
+            42: TelegramMembership("administrator", True),
+            777: TelegramMembership("administrator", True),
+        }
         self.sent = []
 
-    def get_chat_member(self, chat_id, user_id) -> str:
-        return self.status
+    def get_chat_member(self, chat_id, user_id) -> TelegramMembership:
+        return self.memberships[user_id]
 
-    def send_message(self, chat_id, text, reply_markup=None) -> int:
-        self.sent.append((chat_id, text))
+    def send_message(self, chat_id, text, reply_markup=None, parse_mode=None) -> int:
+        self.sent.append((chat_id, text, reply_markup, parse_mode))
         return len(self.sent)
 
 
@@ -73,11 +86,15 @@ def build_handler():
     messages = FakeMessages()
     telegram = FakeTelegram()
     summary_requests = []
+    access = AccessService(chats, telegram, bot_user_id=777)
     handler = GroupUpdateHandler(
         chats=chats,
         members=members,
         messages=messages,
         telegram=telegram,
+        access=access,
+        copy=BotCopy.load(Path("content/bot_copy.ru.toml")),
+        telegram_bot_username="BrevitySisterBot",
         summary_request=lambda chat_id, user_id: summary_requests.append((chat_id, user_id)),
         now=lambda: datetime(2026, 7, 16, 12, 0, tzinfo=timezone.utc),
     )
@@ -86,16 +103,32 @@ def build_handler():
 
 def test_enable_daily_requires_admin_and_tracks_group() -> None:
     handler, chats, _, _, telegram, _ = build_handler()
-    telegram.status = "member"
+    telegram.memberships[42] = TelegramMembership("member", True)
 
     handler(parse_update(group_update("/enable_daily")))
     assert chats.tracked == set()
     assert "администратор" in telegram.sent[-1][1].lower()
 
-    telegram.status = "administrator"
+    telegram.memberships[42] = TelegramMembership("administrator", True)
     handler(parse_update(group_update("/enable_daily", message_id=11)))
     assert chats.tracked == {-1001}
     assert chats.enabled[-1001] is True
+
+
+def test_enable_publishes_private_summary_deep_link() -> None:
+    handler, chats, _, _, telegram, _ = build_handler()
+    chats.next_token = "a" * 32
+
+    handler(parse_update(group_update("/enable_daily")))
+
+    chat_id, text, markup, parse_mode = telegram.sent[-1]
+    assert chat_id == -1001
+    assert text.startswith("Готово — ежедневные сводки включены")
+    assert markup["inline_keyboard"][0][0] == {
+        "text": "Получить сводку лично",
+        "url": "https://t.me/BrevitySisterBot?start=summary_" + "a" * 32,
+    }
+    assert parse_mode is None
 
 
 def test_tracked_disabled_chat_continues_buffering_messages() -> None:
@@ -106,7 +139,7 @@ def test_tracked_disabled_chat_continues_buffering_messages() -> None:
     handler(parse_update(group_update("Обычное сообщение")))
 
     assert messages.saved[0].text == "Обычное сообщение"
-    assert members.observed == [(-1001, 42)]
+    assert members.remembered == [(-1001, 42)]
 
 
 def test_group_summary_registers_private_link_and_dispatches_request() -> None:
@@ -115,5 +148,18 @@ def test_group_summary_registers_private_link_and_dispatches_request() -> None:
 
     handler(parse_update(group_update("/summary")))
 
+    assert members.remembered == [(-1001, 42)]
     assert members.summary_links == [(-1001, 42)]
     assert summary_requests == [(-1001, 42)]
+
+
+def test_disable_daily_uses_configured_copy_and_keeps_group_tracked() -> None:
+    handler, chats, _, _, telegram, _ = build_handler()
+    chats.tracked.add(-1001)
+    chats.enabled[-1001] = True
+
+    handler(parse_update(group_update("/disable_daily")))
+
+    assert chats.enabled[-1001] is False
+    assert chats.is_tracked(-1001) is True
+    assert telegram.sent[-1][1].startswith("Ежедневные сводки отключены")
