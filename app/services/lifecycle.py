@@ -138,7 +138,11 @@ class LifecycleService:
         errors = 0
         for publication_id, chat_id, text in publications:
             try:
-                telegram_message_id = self.telegram.send_message(chat_id, text)
+                telegram_message_id = self.telegram.send_message(
+                    chat_id,
+                    text,
+                    parse_mode="HTML",
+                )
                 self.store.mark_publication_sent(
                     publication_id,
                     telegram_message_id,

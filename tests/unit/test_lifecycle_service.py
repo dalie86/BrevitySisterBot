@@ -55,10 +55,10 @@ class FakeTelegram:
         self.sent = []
         self.error = None
 
-    def send_message(self, chat_id, text, reply_markup=None):
+    def send_message(self, chat_id, text, reply_markup=None, parse_mode=None):
         if self.error is not None:
             raise self.error
-        self.sent.append((chat_id, text))
+        self.sent.append((chat_id, text, parse_mode))
         return 100 + len(self.sent)
 
 
@@ -91,7 +91,7 @@ def test_repeated_publish_sends_once() -> None:
 
     assert first.sent_summaries == 1
     assert second.sent_summaries == 0
-    assert telegram.sent == [(-1001, "готовая сводка")]
+    assert telegram.sent == [(-1001, "готовая сводка", "HTML")]
 
 
 def test_cleanup_refuses_unverified_archive() -> None:

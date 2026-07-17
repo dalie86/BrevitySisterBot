@@ -14,7 +14,7 @@ def main() -> int:
     payload = {
         "url": settings.webhook_url,
         "secret_token": settings.webhook_secret_token,
-        "allowed_updates": ["message", "callback_query"],
+        "allowed_updates": ["message", "callback_query", "chat_member"],
         "drop_pending_updates": False,
     }
     request = urllib.request.Request(

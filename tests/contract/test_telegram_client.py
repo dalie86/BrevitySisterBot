@@ -1,5 +1,6 @@
 import json
 from io import BytesIO
+from types import SimpleNamespace
 from urllib.error import HTTPError
 
 import pytest
@@ -133,3 +134,31 @@ def test_http_error_is_normalized_without_token_leak(monkeypatch) -> None:
     assert raised.value.status_code == 429
     assert raised.value.retry_after_seconds == 3
     assert "secret-token" not in str(raised.value)
+
+
+def test_set_webhook_subscribes_to_membership_updates(monkeypatch) -> None:
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse({"ok": True, "result": True})
+
+    monkeypatch.setattr(
+        "scripts.set_webhook.load_settings",
+        lambda: SimpleNamespace(
+            webhook_url="https://example.test/telegram/webhook",
+            webhook_secret_token="secret",
+            telegram_bot_token="777:token",
+        ),
+    )
+    monkeypatch.setattr("scripts.set_webhook.load_dotenv", lambda: None)
+    monkeypatch.setattr("scripts.set_webhook.urllib.request.urlopen", fake_urlopen)
+
+    from scripts.set_webhook import main
+
+    assert main() == 0
+    assert captured["body"]["allowed_updates"] == [
+        "message",
+        "callback_query",
+        "chat_member",
+    ]

@@ -8,6 +8,7 @@ from typing import Mapping
 @dataclass(frozen=True)
 class Settings:
     telegram_bot_token: str
+    telegram_bot_username: str
     webhook_secret_token: str
     webhook_url: str
     db_host: str
@@ -27,6 +28,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     values = dict(os.environ if environ is None else environ)
     required = (
         "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_BOT_USERNAME",
         "WEBHOOK_SECRET_TOKEN",
         "WEBHOOK_URL",
         "DB_HOST",
@@ -39,8 +41,13 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     if missing:
         raise RuntimeError(f"Missing required settings: {', '.join(missing)}")
 
+    telegram_bot_username = values["TELEGRAM_BOT_USERNAME"].strip().removeprefix("@")
+    if not telegram_bot_username:
+        raise RuntimeError("Missing required settings: TELEGRAM_BOT_USERNAME")
+
     return Settings(
         telegram_bot_token=values["TELEGRAM_BOT_TOKEN"].strip(),
+        telegram_bot_username=telegram_bot_username,
         webhook_secret_token=values["WEBHOOK_SECRET_TOKEN"].strip(),
         webhook_url=values["WEBHOOK_URL"].strip(),
         db_host=values["DB_HOST"].strip(),

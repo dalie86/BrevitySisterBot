@@ -4,14 +4,17 @@ import json
 import sys
 from dataclasses import asdict
 from datetime import datetime, timezone
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 from app.config import Settings, load_settings
+from app.content import BotCopy
 from app.integrations.groq import GroqClient
 from app.integrations.telegram import TelegramClient, parse_update
 from app.repositories.mysql import (
     MySqlDatabase,
+    MySqlChatShareRequestRepository,
     MySqlJobLockRepository,
     MySqlLifecycleStore,
     MySqlMaintenanceStore,
@@ -24,14 +27,17 @@ from app.repositories.mysql import (
     MySqlUpdateRepository,
 )
 from app.jobs.audit import OperationalAuditService
+from app.services.access import AccessService
 from app.services.group_updates import GroupUpdateHandler
 from app.services.lifecycle import JobReport, LifecycleService
+from app.services.membership_updates import MembershipUpdateHandler
 from app.services.on_demand import OnDemandSummaryHandler, OnDemandSummaryService
 from app.services.summaries import SummaryService
 from app.services.telegram_effects import DurableTelegramGateway, telegram_update_scope
 from app.services.updates import UpdateService
 
 COMMANDS = {"recover", "prepare", "publish", "archive", "cleanup", "purge", "audit"}
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -81,16 +87,20 @@ def _run_command(
     *,
     dry_run: bool = False,
 ) -> JobReport | int | dict[str, int | bool]:
+    copy = BotCopy.load(PROJECT_ROOT / "content" / "bot_copy.ru.toml")
+    bot_user_id = int(settings.telegram_bot_token.split(":", 1)[0])
     raw_telegram = TelegramClient(settings.telegram_bot_token)
     messages = MySqlMessageRepository(database.connect)
     members = MySqlMemberRepository(database.connect)
     chats = MySqlTrackedChatRepository(database.connect)
     summary_repository = MySqlSummaryRepository(database.connect)
     selections = MySqlSummarySelectionRepository(database.connect)
+    share_requests = MySqlChatShareRequestRepository(database.connect)
     summaries = SummaryService(
         messages=messages,
         summaries=summary_repository,
         llm=GroqClient(settings.groq_api_key, settings.groq_model),
+        copy=copy,
         timezone_name=settings.timezone,
         automatic_min_messages=settings.automatic_min_messages,
         on_demand_min_messages=settings.on_demand_min_messages,
@@ -110,13 +120,18 @@ def _run_command(
         on_demand_requests = OnDemandSummaryService(
             summaries=summaries,
             telegram=telegram,
+            copy=copy,
             now=lambda: datetime.now(timezone.utc),
         )
+        access = AccessService(chats, telegram, bot_user_id)
         group_handler = GroupUpdateHandler(
             chats=chats,
             members=members,
             messages=messages,
             telegram=telegram,
+            access=access,
+            copy=copy,
+            telegram_bot_username=settings.telegram_bot_username,
             summary_request=lambda chat_id, user_id: on_demand_requests.request(
                 chat_id=chat_id,
                 requester_user_id=user_id,
@@ -125,10 +140,18 @@ def _run_command(
             now=lambda: datetime.now(timezone.utc),
         )
         private_handler = OnDemandSummaryHandler(
+            chats=chats,
             members=members,
+            share_requests=share_requests,
             selections=selections,
             telegram=telegram,
             summaries=summaries,
+            copy=copy,
+            bot_user_id=bot_user_id,
+            now=lambda: datetime.now(timezone.utc),
+        )
+        membership_handler = MembershipUpdateHandler(
+            members=members,
             now=lambda: datetime.now(timezone.utc),
         )
 
@@ -137,6 +160,7 @@ def _run_command(
                 update = parse_update(payload)
                 group_handler(update)
                 private_handler(update)
+                membership_handler(update)
 
         return UpdateService(
             MySqlUpdateRepository(database.connect),
