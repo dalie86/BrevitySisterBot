@@ -1,0 +1,11 @@
+# Добавьте команды через панель Beget. Замените LOGIN на логин аккаунта.
+*/5 * * * * cd /home/LOGIN/brevity.prosto-kosmos.ru && .venv/bin/python -m app.jobs.cli recover >> logs/recover-$(date +\%F).log 2>&1
+45 20 * * * cd /home/LOGIN/brevity.prosto-kosmos.ru && .venv/bin/python -m app.jobs.cli prepare >> logs/prepare-$(date +\%F).log 2>&1
+0 21 * * * cd /home/LOGIN/brevity.prosto-kosmos.ru && .venv/bin/python -m app.jobs.cli publish >> logs/publish-$(date +\%F).log 2>&1
+15 21 * * * cd /home/LOGIN/brevity.prosto-kosmos.ru && .venv/bin/python -m app.jobs.cli archive >> logs/archive-$(date +\%F).log 2>&1
+30 21 * * * cd /home/LOGIN/brevity.prosto-kosmos.ru && .venv/bin/python -m app.jobs.cli cleanup >> logs/cleanup-$(date +\%F).log 2>&1
+15 3 * * * cd /home/LOGIN/brevity.prosto-kosmos.ru && .venv/bin/python -m app.jobs.cli purge >> logs/purge-$(date +\%F).log 2>&1
+30 3 * * * cd /home/LOGIN/brevity.prosto-kosmos.ru && /bin/sh scripts/backup_db.sh >> logs/backup-$(date +\%F).log 2>&1
+30 15 * * * cd /home/LOGIN/brevity.prosto-kosmos.ru && /bin/sh scripts/backup_db.sh >> logs/backup-$(date +\%F).log 2>&1
+45 3 * * * cd /home/LOGIN/brevity.prosto-kosmos.ru && /bin/sh scripts/rotate_logs.sh
+*/15 * * * * cd /home/LOGIN/brevity.prosto-kosmos.ru && .venv/bin/python -m app.jobs.cli audit >> logs/audit-$(date +\%F).log 2>&1

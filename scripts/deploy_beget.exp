@@ -1,0 +1,108 @@
+#!/usr/bin/expect -f
+
+set timeout 300
+set env_file ".env.hosting"
+
+if {![file exists $env_file]} {
+    puts "$env_file is missing; copy hosting.env.example and fill it locally"
+    exit 2
+}
+
+set fh [open $env_file r]
+while {[gets $fh line] >= 0} {
+    if {[regexp {^([^#=]+)=(.*)$} $line -> key value]} {
+        set key [string trim $key]
+        set value [string trim $value]
+        set first [string index $value 0]
+        set last [string index $value end]
+        if {($first eq "\"" && $last eq "\"") || ($first eq "'" && $last eq "'")} {
+            set value [string range $value 1 end-1]
+        }
+        set config($key) $value
+    }
+}
+close $fh
+
+foreach required {BEGET_HOST BEGET_USER BEGET_SSH_PORT} {
+    if {![info exists config($required)] || $config($required) eq ""} {
+        puts "$required is missing in $env_file"
+        exit 2
+    }
+}
+if {![info exists config(BEGET_REMOTE_DIR)] || $config(BEGET_REMOTE_DIR) eq ""} {
+    set config(BEGET_REMOTE_DIR) "~/brevity.prosto-kosmos.ru"
+}
+if {![info exists config(BEGET_PYTHON)] || $config(BEGET_PYTHON) eq ""} {
+    set config(BEGET_PYTHON) "python3.11"
+}
+
+set ssh_base [list ssh -o StrictHostKeyChecking=accept-new -p $config(BEGET_SSH_PORT)]
+if {[info exists config(BEGET_SSH_KEY)] && $config(BEGET_SSH_KEY) ne ""} {
+    lappend ssh_base -i $config(BEGET_SSH_KEY)
+}
+set remote "$config(BEGET_USER)@$config(BEGET_HOST)"
+
+proc wait_for_command {config_name} {
+    upvar $config_name config
+    expect {
+        -re "(?i)password:" {
+            if {[info exists config(BEGET_PASSWORD)] && $config(BEGET_PASSWORD) ne ""} {
+                send -- "$config(BEGET_PASSWORD)\r"
+                exp_continue
+            }
+            exit 255
+        }
+        eof
+    }
+    catch wait result
+    set exit_code [lindex $result 3]
+    if {$exit_code != 0} {
+        exit $exit_code
+    }
+}
+
+spawn {*}$ssh_base $remote \
+    "mkdir -p $config(BEGET_REMOTE_DIR)/public_html $config(BEGET_REMOTE_DIR)/logs $config(BEGET_REMOTE_DIR)/backups $config(BEGET_REMOTE_DIR)/tmp"
+wait_for_command config
+
+set rsync_ssh "ssh -p $config(BEGET_SSH_PORT) -o StrictHostKeyChecking=accept-new"
+if {[info exists config(BEGET_SSH_KEY)] && $config(BEGET_SSH_KEY) ne ""} {
+    set rsync_ssh "$rsync_ssh -i $config(BEGET_SSH_KEY)"
+}
+set target "$remote:$config(BEGET_REMOTE_DIR)/"
+
+spawn rsync -rltz --omit-dir-times --no-perms --delete \
+    --exclude .git \
+    --exclude .venv \
+    --exclude .venv-0.2 \
+    --exclude .env \
+    --exclude .env.hosting \
+    --exclude .ssh \
+    --exclude bot.db \
+    --exclude archive.db \
+    --exclude "*.sqlite3" \
+    --exclude "*.sqlite3.*" \
+    --exclude backups \
+    --exclude logs \
+    --exclude tmp \
+    --exclude __pycache__ \
+    --exclude .pytest_cache \
+    --exclude .ruff_cache \
+    --exclude .superpowers \
+    -e $rsync_ssh \
+    ./ $target
+wait_for_command config
+
+set install_command [format {
+    cd %s &&
+    test -f .env &&
+    /bin/sh scripts/backup_db.sh &&
+    if [ ! -x .venv/bin/python ]; then %s -m venv .venv; fi &&
+    .venv/bin/python -m pip install --disable-pip-version-check -e . &&
+    .venv/bin/python scripts/migrate.py &&
+    touch tmp/restart.txt
+} $config(BEGET_REMOTE_DIR) $config(BEGET_PYTHON)]
+
+spawn {*}$ssh_base $remote $install_command
+wait_for_command config
+exit 0

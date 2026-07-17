@@ -132,6 +132,14 @@ class Storage:
             ).fetchone()
         return bool(row and row["enabled"])
 
+    def is_chat_tracked(self, chat_id: int) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM tracked_chats WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+        return bool(row)
+
     def add_message(self, message: StoredMessage) -> None:
         with self._connect() as connection:
             connection.execute(

@@ -1,161 +1,170 @@
-# Telegram Daily Summary Bot
+# BrevitySisterBot 0.2.0
 
-Бот для Telegram-группы, который работает через `cron`, а не как постоянно запущенный процесс.
+Production-версия Telegram-бота ежедневных групповых сводок:
 
-Схема работы:
+- webhook на Python WSGI/Passenger;
+- MySQL как единственная рабочая и архивная база;
+- Groq API с моделью `qwen/qwen3.6-27b`;
+- локальный эвристический fallback при недоступности модели;
+- автоматическая публикация в `21:00` по Москве;
+- групповые и приватные сводки по запросу;
+- архив, backup, диагностика и recovery без постоянно работающего процесса.
 
-- с `10:00` до `20:59` по Москве бот раз в час забирает новые `updates` из Telegram и сохраняет сообщения в SQLite;
-- в `20:40` запускается дополнительный финальный сборщик;
-- в `20:45` бот собирает все сообщения за текущие сутки и готовит LLM-саммари;
-- в `21:00` бот публикует уже готовую сводку в групповой чат.
-- в `21:10` бот архивирует сегодняшние сообщения и готовую сводку в `archive.db`;
-- в `21:15` бот очищает сегодняшние рабочие данные из `bot.db`.
+Историческая версия `0.1.0` сохранена без runtime-секретов в
+[`mvp-1/`](mvp-1/).
 
-## Важное ограничение Telegram
+## Как работает
 
-Telegram Bot API не умеет разово выгружать полную историю чата за день.  
-Поэтому бот накапливает только новые сообщения, которые пришли после:
+Webhook немедленно сохраняет каждый Telegram update в MySQL и сразу пытается
+обработать его. Поэтому запрос `/summary` видит все сообщения, уже доставленные
+webhook’ом, и не ждёт пятиминутный cron. Recovery раз в пять минут нужен только
+для подбора прерванных или временно неуспешных задач.
 
-1. добавления бота в группу;
-2. отключения `Privacy Mode` через BotFather;
-3. фактического чтения очереди `getUpdates` cron-джобой.
+Сообщения уникальны по `(chat_id, telegram_message_id)`. Генерация сводки
+резервируется по хэшу исходных сообщений до обращения в Groq, поэтому
+параллельные одинаковые запросы не запускают модель повторно.
 
-Сообщения сохраняются только для тех групп, где был вызван `/enable_daily`.
+Исходящие Telegram-ответы внутри webhook фиксируются в `telegram_effects` до
+API-вызова. Recovery пропускает уже начатый эффект, поэтому падение Passenger в
+неоднозначный момент не создаёт повторное сообщение; такой эффект виден в
+операционном аудите как `review_required`.
 
-## Файлы и режимы запуска
+Основное расписание:
 
-Главный вход:
+- `20:45` — подготовка автоматических сводок;
+- `21:00` — публикация;
+- `21:15` — идемпотентное копирование текущего и предыдущего дня в архив;
+- `21:30` — очистка предыдущего дня, только после успешной сводки либо явно
+  зафиксированного пропуска и проверки архивной копии;
+- каждые 5 минут — recovery Telegram update’ов;
+- `03:15` — retention;
+- `03:30` — backup MySQL.
+
+## Команды бота
+
+- `/enable_daily` — подключить группу, только для администратора;
+- `/disable_daily` — выключить ежедневную публикацию, буферизация продолжается;
+- `/summary` в группе — подготовить сводку и опубликовать её в группе;
+- `/summary` в личном чате — получить сводку приватно.
+
+Первый групповой `/summary` связывает участника с группой. Если в личном чате
+доступно несколько групп, бот показывает безопасный список кнопок. Перед
+приватной выдачей членство повторно проверяется через `getChatMember`.
+
+Порог автоматической сводки — 15 сообщений, ручной — 5. Перед генерацией бот
+предупреждает, что обработка может занять до 1–2 минут.
+
+## Локальная установка
+
+Требуется Python 3.11+ и MySQL 8-compatible.
 
 ```bash
-python3 bot.py collect
-python3 bot.py prepare
-python3 bot.py send
-python3 bot.py archive
-python3 bot.py cleanup
-```
-
-То же самое можно вызывать напрямую:
-
-- `python3 collect_updates.py`
-- `python3 prepare_summary.py`
-- `python3 send_summary.py`
-- `python3 archive_day.py`
-- `python3 cleanup_day.py`
-
-## Установка
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -e '.[dev]'
 cp .env.example .env
 ```
 
-## Настройки `.env`
-
-- `TELEGRAM_BOT_TOKEN` - токен бота из BotFather
-- `BOT_TIMEZONE` - оставьте `Europe/Moscow`
-- `COLLECT_INTERVAL_MINUTES` - интервал между регулярными запусками, по умолчанию `60`
-- `COLLECT_START_HOUR=10`
-- `COLLECT_START_MINUTE=0`
-- `COLLECT_END_HOUR=20`
-- `COLLECT_END_MINUTE=59`
-- `FINAL_COLLECT_HOUR=20`
-- `FINAL_COLLECT_MINUTE=40`
-- `PREPARE_HOUR=20`
-- `PREPARE_MINUTE=45`
-- `SUMMARY_HOUR=21`
-- `SUMMARY_MINUTE=0`
-- `MIN_MESSAGES_FOR_SUMMARY=15` - если за день сообщений меньше этого порога, `prepare` не обращается к LLM, а `send` ничего не публикует
-- `LLM_PROVIDER=ollama`
-
-### Вариант 0. Локальная модель через Ollama
-
-Если у вас локально поднят `Ollama`, бот может делать саммари через локальную модель, например `qwen2.5:14b-instruct`.
-
-Минимально нужны:
-
-- `LLM_PROVIDER=ollama`
-- `OLLAMA_MODEL=qwen2.5:14b-instruct`
-
-Опционально:
-
-- `OLLAMA_API_URL`, по умолчанию `http://127.0.0.1:11434/api/chat`
-- `OLLAMA_KEEP_ALIVE`, по умолчанию `10m`
-
-Для отладки запросов к локальной модели смотри отдельный лог:
-
-- `logs/ollama.log`
-
-## Как это работает в группе
-
-Так как бот не висит онлайн постоянно, команды обрабатываются при ближайшем запуске сборщика:
-
-- `/start` - справка
-- `/enable_daily` - включить сбор и сводку
-- `/disable_daily` - выключить сбор
-- `/summary` - прислать текущую сводку дня
-
-Если, например, cron запускается раз в час, команда может выполниться не мгновенно, а при ближайшем почасовом запуске.
-
-## Пример cron-расписания
-
-Ниже пример для Linux/VPS или хостинга с поддержкой cron и Python.
-
-Открыть crontab:
+Заполните `.env`, затем примените схему:
 
 ```bash
-crontab -e
+.venv/bin/python scripts/migrate.py
 ```
 
-Добавить:
-
-```cron
-0 10-20 * * * cd /opt/telegram-daily-summary-bot && /opt/telegram-daily-summary-bot/.venv/bin/python bot.py collect >> /opt/telegram-daily-summary-bot/logs/collect.log 2>&1
-40 20 * * * cd /opt/telegram-daily-summary-bot && /opt/telegram-daily-summary-bot/.venv/bin/python bot.py collect >> /opt/telegram-daily-summary-bot/logs/collect.log 2>&1
-45 20 * * * cd /opt/telegram-daily-summary-bot && /opt/telegram-daily-summary-bot/.venv/bin/python bot.py prepare >> /opt/telegram-daily-summary-bot/logs/prepare.log 2>&1
-0 21 * * * cd /opt/telegram-daily-summary-bot && /opt/telegram-daily-summary-bot/.venv/bin/python bot.py send >> /opt/telegram-daily-summary-bot/logs/send.log 2>&1
-10 21 * * * cd /opt/telegram-daily-summary-bot && /opt/telegram-daily-summary-bot/.venv/bin/python bot.py archive >> /opt/telegram-daily-summary-bot/logs/archive.log 2>&1
-15 21 * * * cd /opt/telegram-daily-summary-bot && /opt/telegram-daily-summary-bot/.venv/bin/python bot.py cleanup >> /opt/telegram-daily-summary-bot/logs/cleanup.log 2>&1
-```
-
-Перед этим создай папку для логов:
+Проверка:
 
 ```bash
-mkdir -p /opt/telegram-daily-summary-bot/logs
+.venv/bin/python -m pytest -q
+.venv/bin/ruff check app scripts tests passenger_wsgi.py public_html/passenger_wsgi.py
 ```
 
-## Как внедрить
+## Beget
 
-1. Создайте бота через `@BotFather` и получите `TELEGRAM_BOT_TOKEN`.
-2. Отключите у бота `Privacy Mode`.
-3. Разместите файлы проекта на сервере.
-4. Создайте `.venv`, установите зависимости и заполните `.env`.
-5. Запустите вручную:
+Production URL:
+
+```text
+https://brevity.prosto-kosmos.ru
+https://brevity.prosto-kosmos.ru/telegram/webhook
+```
+
+Ожидаемая структура:
+
+```text
+~/brevity.prosto-kosmos.ru/
+  .env
+  .venv/
+  app/
+  migrations/
+  scripts/
+  public_html/
+    passenger_wsgi.py
+  backups/
+  logs/
+  tmp/
+```
+
+Подготовка:
+
+1. Создать отдельную MySQL-базу и пользователя для BrevitySisterBot.
+2. В BotFather отключить privacy mode, иначе бот не получит обычные сообщения
+   группы и не сможет составить сводку.
+3. В настройках проекта Groq включить Zero Data Retention и создать API key.
+4. Создать remote `.env` по [`.env.example`](.env.example).
+5. Создать локальный `.env.hosting` по
+   [`hosting.env.example`](hosting.env.example).
+6. Настроить Python/Passenger для каталога поддомена.
+7. Запустить:
 
 ```bash
-python3 bot.py collect
+scripts/deploy_beget.exp
 ```
 
-6. Добавьте бота в группу.
-7. Напишите в группе `/enable_daily`.
-8. Запустите ещё раз `collect`, чтобы команда обработалась.
-9. После этого настройте cron.
+Deploy не переносит `.env`, SQLite, backup, логи, `.git` и локальные virtualenv.
+После загрузки он устанавливает зависимости, применяет миграции и создаёт
+`tmp/restart.txt` для перезапуска Passenger.
 
-## Что важно помнить
-
-- бот не вычитывает старую историю задним числом;
-- он читает только новые `updates`, которые Telegram держит в очереди;
-- один запуск `collect` вычитывает всю доступную очередь `getUpdates`, а не только одну страницу;
-- регулярный сбор работает только в окне `10:00-20:59` по Москве;
-- саммари строится по сообщениям за текущие сутки до `20:40` по Москве;
-- если за день накопилось меньше `15` сообщений, подготовка саммари и публикация в чат пропускаются;
-- в `21:00` публикуется уже готовый текст из буфера.
-- в `21:10` данные дня копируются в `archive.db`;
-- в `21:15` рабочая база очищается от сегодняшних сообщений и сводки.
-
-## Тесты
+После первого deploy:
 
 ```bash
-python3 -m unittest discover -s tests -v
+.venv/bin/python scripts/set_webhook.py
+.venv/bin/python scripts/smoke_preview.py
 ```
+
+Задания из [`crontab.beget.example`](crontab.beget.example) нужно добавить
+через панель Beget, заменив `LOGIN` на логин аккаунта.
+
+## Импорт 0.1.0
+
+Сначала сделайте неизменяемые копии старых SQLite-файлов. Импорт открывает
+источники в read-only режиме и использует идемпотентные вставки:
+
+```bash
+.venv/bin/python scripts/import_mvp.py \
+  --bot-db /path/to/bot.db \
+  --archive-db /path/to/archive.db
+```
+
+Автоматическую очистку следует включать только после проверки количества
+импортированных строк и успешного backup MySQL.
+
+## Операционные команды
+
+```bash
+.venv/bin/python -m app.jobs.cli recover
+.venv/bin/python -m app.jobs.cli prepare
+.venv/bin/python -m app.jobs.cli publish
+.venv/bin/python -m app.jobs.cli archive
+.venv/bin/python -m app.jobs.cli cleanup
+.venv/bin/python -m app.jobs.cli purge
+.venv/bin/python -m app.jobs.cli audit
+/bin/sh scripts/backup_db.sh
+```
+
+Все cron-команды используют MySQL lease, чтобы одинаковые задания не
+выполнялись параллельно.
+
+## Документация
+
+- [Архитектурная спецификация на русском](docs/superpowers/specs/2026-07-16-brevity-sister-bot-0.2.0-design-ru.md)
+- [Architecture specification in English](docs/superpowers/specs/2026-07-16-brevity-sister-bot-0.2.0-design.md)
+- [Implementation plan](docs/superpowers/plans/2026-07-16-brevity-sister-bot-0.2.0.md)
+- [Production cutover checklist](docs/PRODUCTION_CUTOVER.md)

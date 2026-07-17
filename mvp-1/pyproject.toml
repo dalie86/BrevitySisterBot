@@ -1,0 +1,13 @@
+[project]
+name = "telegram-daily-summary-bot"
+version = "0.1.0"
+description = "Telegram group bot that collects daily messages and posts a summary at 21:00."
+requires-python = ">=3.9"
+dependencies = [
+  "python-dotenv>=1.0.1",
+  "python-telegram-bot>=21.10",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
