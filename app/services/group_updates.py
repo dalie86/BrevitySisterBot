@@ -50,7 +50,9 @@ class GroupUpdateHandler:
             return
 
         current = self.now()
-        command = _command_name(message.text)
+        command = _command_name(message.text, self.telegram_bot_username)
+        if command is None and message.text.strip().startswith("/"):
+            return
         if command == "/start":
             self.telegram.send_message(
                 message.chat_id,
@@ -163,8 +165,14 @@ class GroupUpdateHandler:
         )
 
 
-def _command_name(text: str) -> str | None:
+def _command_name(text: str, telegram_bot_username: str) -> str | None:
     stripped = text.strip()
     if not stripped.startswith("/"):
         return None
-    return stripped.split(maxsplit=1)[0].split("@", maxsplit=1)[0].lower()
+    command_token = stripped.split(maxsplit=1)[0]
+    command, separator, addressed_username = command_token.partition("@")
+    if separator and addressed_username.casefold() != telegram_bot_username.lstrip(
+        "@"
+    ).casefold():
+        return None
+    return command.lower()

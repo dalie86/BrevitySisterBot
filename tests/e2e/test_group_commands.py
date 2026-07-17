@@ -6,6 +6,7 @@ from app.domain.models import TelegramMembership
 from app.integrations.telegram import parse_update
 from app.services.access import AccessService
 from app.services.group_updates import GroupUpdateHandler
+from app.services.telegram_effects import DurableTelegramGateway, telegram_update_scope
 
 
 class FakeChats:
@@ -13,8 +14,10 @@ class FakeChats:
         self.tracked = set()
         self.enabled = {}
         self.next_token = "a" * 32
+        self.enable_calls = []
 
     def enable(self, chat_id, title, now) -> str:
+        self.enable_calls.append((chat_id, title))
         self.tracked.add(chat_id)
         self.enabled[chat_id] = True
         return self.next_token
@@ -66,6 +69,29 @@ class FakeTelegram:
         self.sent.append((chat_id, text, reply_markup, parse_mode))
         return len(self.sent)
 
+    def answer_callback_query(self, callback_id) -> None:
+        return None
+
+
+class FakeEffects:
+    def __init__(self) -> None:
+        self.records = {}
+        self.payload_hashes = []
+
+    def begin(self, effect_key, update_id, method, payload_hash, now):
+        self.payload_hashes.append(payload_hash)
+        record = self.records.get(effect_key)
+        if record is not None:
+            return record
+        self.records[effect_key] = ("sending", None)
+        return None
+
+    def mark_sent(self, effect_key, telegram_message_id, now) -> None:
+        self.records[effect_key] = ("sent", telegram_message_id)
+
+    def mark_review_required(self, effect_key, error, now) -> None:
+        self.records[effect_key] = ("review_required", None)
+
 
 def group_update(text: str, message_id: int = 10) -> dict:
     return {
@@ -80,11 +106,11 @@ def group_update(text: str, message_id: int = 10) -> dict:
     }
 
 
-def build_handler():
+def build_handler(telegram=None):
     chats = FakeChats()
     members = FakeMembers()
     messages = FakeMessages()
-    telegram = FakeTelegram()
+    telegram = telegram or FakeTelegram()
     summary_requests = []
     access = AccessService(chats, telegram, bot_user_id=777)
     handler = GroupUpdateHandler(
@@ -131,6 +157,23 @@ def test_enable_publishes_private_summary_deep_link() -> None:
     assert parse_mode is None
 
 
+def test_enable_addressed_to_this_bot_is_accepted_case_insensitively() -> None:
+    handler, chats, _, _, _, _ = build_handler()
+
+    handler(parse_update(group_update("/enable_daily@bReViTySiStErBoT")))
+
+    assert chats.enabled[-1001] is True
+
+
+def test_enable_addressed_to_other_bot_does_not_mutate_group() -> None:
+    handler, chats, _, _, telegram, _ = build_handler()
+
+    handler(parse_update(group_update("/enable_daily@OtherBot")))
+
+    assert chats.tracked == set()
+    assert telegram.sent == []
+
+
 def test_tracked_disabled_chat_continues_buffering_messages() -> None:
     handler, chats, members, messages, _, _ = build_handler()
     chats.tracked.add(-1001)
@@ -151,6 +194,71 @@ def test_group_summary_registers_private_link_and_dispatches_request() -> None:
     assert members.remembered == [(-1001, 42)]
     assert members.summary_links == [(-1001, 42)]
     assert summary_requests == [(-1001, 42)]
+
+
+def test_summary_addressed_to_this_bot_is_accepted_case_insensitively() -> None:
+    handler, chats, members, _, _, summary_requests = build_handler()
+    chats.tracked.add(-1001)
+
+    handler(parse_update(group_update("/summary@BREVITYSISTERBOT")))
+
+    assert members.remembered == [(-1001, 42)]
+    assert summary_requests == [(-1001, 42)]
+
+
+def test_summary_addressed_to_other_bot_is_not_dispatched() -> None:
+    handler, chats, members, messages, _, summary_requests = build_handler()
+    chats.tracked.add(-1001)
+
+    handler(parse_update(group_update("/summary@OtherBot")))
+
+    assert members.remembered == []
+    assert messages.saved == []
+    assert summary_requests == []
+
+
+def test_recovered_enable_replays_one_stable_onboarding_effect() -> None:
+    raw = FakeTelegram()
+    effects = FakeEffects()
+
+    def now() -> datetime:
+        return datetime(2026, 7, 16, 12, 0, tzinfo=timezone.utc)
+
+    telegram = DurableTelegramGateway(raw=raw, effects=effects, now=now)
+    handler, chats, _, _, _, _ = build_handler(telegram)
+    update = parse_update(group_update("/enable_daily"))
+
+    with telegram_update_scope(10):
+        handler(update)
+    with telegram_update_scope(10):
+        handler(update)
+
+    assert chats.enable_calls == [(-1001, "Demo"), (-1001, "Demo")]
+    assert len(effects.records) == 1
+    assert len(effects.payload_hashes) == 2
+    assert effects.payload_hashes[0] == effects.payload_hashes[1]
+    assert raw.sent == [
+        (
+            -1001,
+            BotCopy.load(Path("content/bot_copy.ru.toml")).value(
+                "messages", "daily_enabled"
+            ),
+            {
+                "inline_keyboard": [
+                    [
+                        {
+                            "text": "Получить сводку лично",
+                            "url": (
+                                "https://t.me/BrevitySisterBot?start=summary_"
+                                + "a" * 32
+                            ),
+                        }
+                    ]
+                ]
+            },
+            None,
+        )
+    ]
 
 
 def test_disable_daily_uses_configured_copy_and_keeps_group_tracked() -> None:
