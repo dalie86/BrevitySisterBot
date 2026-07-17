@@ -39,3 +39,54 @@ def test_render_rejects_unknown_or_missing_values() -> None:
             topic_details="Готово",
             unexpected="value",
         )
+
+
+def test_catalog_rejects_missing_file_and_malformed_toml(tmp_path: Path) -> None:
+    with pytest.raises(CopyConfigurationError, match="Cannot load bot copy"):
+        BotCopy.load(tmp_path / "missing.toml")
+    malformed = tmp_path / "malformed.toml"
+    malformed.write_text("[messages\nbroken", encoding="utf-8")
+    with pytest.raises(CopyConfigurationError, match="Cannot load bot copy"):
+        BotCopy.load(malformed)
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [("schema_version = 1", "schema_version = 2"), ('locale = "ru"', 'locale = "en"')],
+)
+def test_catalog_rejects_wrong_schema_or_locale(
+    tmp_path: Path, old: str, new: str
+) -> None:
+    source = Path("content/bot_copy.ru.toml").read_text(encoding="utf-8")
+    broken = tmp_path / "copy.toml"
+    broken.write_text(source.replace(old, new, 1), encoding="utf-8")
+
+    with pytest.raises(CopyConfigurationError, match="schema_version=1 and locale=ru"):
+        BotCopy.load(broken)
+
+
+@pytest.mark.parametrize("value", ['""', '[]'])
+def test_catalog_rejects_empty_or_non_string_value(tmp_path: Path, value: str) -> None:
+    source = Path("content/bot_copy.ru.toml").read_text(encoding="utf-8")
+    broken = tmp_path / "copy.toml"
+    broken.write_text(
+        source.replace('choose_group = "Выбрать группу"', f"choose_group = {value}", 1),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CopyConfigurationError, match="buttons.choose_group"):
+        BotCopy.load(broken)
+
+
+@pytest.mark.parametrize("length", [0, 65])
+def test_catalog_validates_button_length(tmp_path: Path, length: int) -> None:
+    source = Path("content/bot_copy.ru.toml").read_text(encoding="utf-8")
+    broken = tmp_path / "copy.toml"
+    replacement = 'choose_group = "' + ("x" * length) + '"'
+    broken.write_text(
+        source.replace('choose_group = "Выбрать группу"', replacement, 1),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CopyConfigurationError, match="buttons.choose_group"):
+        BotCopy.load(broken)

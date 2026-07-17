@@ -58,3 +58,30 @@ def test_production_dispatches_each_handler_once(monkeypatch) -> None:
 
     assert [name for name, _update in calls] == ["group", "private", "membership"]
     assert calls[0][1] is calls[1][1] is calls[2][1]
+
+
+def test_real_chat_member_payload_reaches_membership_repository(monkeypatch) -> None:
+    production = _import_production(monkeypatch)
+    recorded = []
+    monkeypatch.setattr(
+        production.members,
+        "record_membership",
+        lambda chat_id, user_id, status, is_member, now: recorded.append(
+            (chat_id, user_id, status, is_member)
+        ),
+    )
+
+    production._business_handler(
+        {
+            "update_id": 45,
+            "chat_member": {
+                "chat": {"id": -1001, "type": "supergroup", "title": "Demo"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "date": 1_752_688_800,
+                "old_chat_member": {"user": {"id": 42}, "status": "member"},
+                "new_chat_member": {"user": {"id": 42}, "status": "left"},
+            },
+        }
+    )
+
+    assert recorded == [(-1001, 42, "left", False)]

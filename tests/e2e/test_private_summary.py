@@ -4,7 +4,14 @@ from pathlib import Path
 import pytest
 
 from app.content import BotCopy
-from app.domain.models import GeneratedSummary, SummaryKind, SummaryStatus, TelegramMembership
+from app.domain.models import (
+    GeneratedSummary,
+    ReservationResult,
+    ReservationState,
+    SummaryKind,
+    SummaryStatus,
+    TelegramMembership,
+)
 from app.integrations.telegram import (
     IncomingCallback,
     IncomingChatShared,
@@ -54,19 +61,38 @@ class FakeShareRequests:
         self.created: list[tuple[int, datetime]] = []
         self.consumable: set[tuple[int, int]] = set()
         self.consumed: list[tuple[int, int]] = []
+        self.by_key = {}
+        self.reservations = {}
+
+    def get_or_create(self, user_id, idempotency_key, now):
+        self.created.append((user_id, now))
+        self.by_key.setdefault(idempotency_key, self.next_id)
+        self.consumable.add((self.by_key[idempotency_key], user_id))
+        return self.by_key[idempotency_key]
 
     def create(self, user_id, now):
         self.created.append((user_id, now))
         return self.next_id
 
-    def is_valid(self, request_id, user_id, now):
-        return (request_id, user_id) in self.consumable
-
-    def consume(self, request_id, user_id, now):
+    def reserve(self, request_id, user_id, chat_id, update_id, now):
         key = (request_id, user_id)
         if key not in self.consumable:
+            return ReservationResult(ReservationState.UNAVAILABLE)
+        reservation = self.reservations.get(key)
+        if reservation is None:
+            self.reservations[key] = [update_id, chat_id, False]
+            return ReservationResult(ReservationState.ACQUIRED, chat_id)
+        if reservation[0] != update_id or reservation[1] != chat_id:
+            return ReservationResult(ReservationState.UNAVAILABLE)
+        state = ReservationState.FINALIZED if reservation[2] else ReservationState.RESUMED
+        return ReservationResult(state, chat_id)
+
+    def finalize(self, request_id, user_id, update_id, now):
+        key = (request_id, user_id)
+        reservation = self.reservations.get(key)
+        if reservation is None or reservation[0] != update_id:
             return False
-        self.consumable.remove(key)
+        reservation[2] = True
         self.consumed.append(key)
         return True
 
@@ -75,15 +101,41 @@ class FakeSelections:
     def __init__(self) -> None:
         self.items = {}
         self.counter = 0
+        self.by_key = {}
+        self.reservations = {}
 
     def create(self, user_id, chat_id, now):
+        return self.get_or_create(user_id, chat_id, f"seed-{self.counter + 1}", now)
+
+    def get_or_create(self, user_id, chat_id, idempotency_key, now):
+        if idempotency_key in self.by_key:
+            return self.by_key[idempotency_key]
         self.counter += 1
         token = f"opaque-{self.counter}"
+        self.by_key[idempotency_key] = token
         self.items[(token, user_id)] = chat_id
         return token
 
-    def resolve(self, token, user_id, now):
-        return self.items.pop((token, user_id), None)
+    def reserve(self, token, user_id, update_id, now):
+        key = (token, user_id)
+        chat_id = self.items.get(key)
+        if chat_id is None:
+            return ReservationResult(ReservationState.UNAVAILABLE)
+        reservation = self.reservations.get(key)
+        if reservation is None:
+            self.reservations[key] = [update_id, False]
+            return ReservationResult(ReservationState.ACQUIRED, chat_id)
+        if reservation[0] != update_id:
+            return ReservationResult(ReservationState.UNAVAILABLE)
+        state = ReservationState.FINALIZED if reservation[1] else ReservationState.RESUMED
+        return ReservationResult(state, chat_id)
+
+    def finalize(self, token, user_id, update_id, now):
+        reservation = self.reservations[(token, user_id)]
+        if reservation[0] != update_id:
+            return False
+        reservation[1] = True
+        return True
 
 
 class FakeTelegram:
@@ -261,7 +313,6 @@ def test_chat_shared_retry_keeps_request_until_terminal_action_succeeds() -> Non
     with pytest.raises(TelegramApiError, match="temporary"):
         handler(chat_shared_update())
 
-    assert share_requests.is_valid(-77, 42, NOW) is True
     assert share_requests.consumed == []
 
     telegram.membership_error = None
@@ -270,7 +321,6 @@ def test_chat_shared_retry_keeps_request_until_terminal_action_succeeds() -> Non
     assert members.remembered == [(-1001, 42)]
     assert len(summaries.calls) == 1
     assert share_requests.consumed == [(-77, 42)]
-    assert share_requests.is_valid(-77, 42, NOW) is False
 
 
 @pytest.mark.parametrize(
@@ -385,8 +435,7 @@ def test_callback_selection_is_consumed_once() -> None:
     handler(callback)
 
     assert len(summaries.calls) == 1
-    assert telegram.sent[-1][1] == COPY.value("messages", "group_choice_expired")
-    assert telegram.answered_callbacks == ["callback", "callback"]
+    assert telegram.answered_callbacks == ["callback"]
 
 
 def test_telegram_membership_failures_propagate() -> None:

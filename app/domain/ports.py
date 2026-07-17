@@ -7,6 +7,7 @@ from app.domain.models import (
     GeneratedSummary,
     LlmResult,
     QueuedUpdate,
+    ReservationResult,
     StoredMessage,
     SummaryKind,
     TelegramMembership,
@@ -77,13 +78,22 @@ class ChatRepository(Protocol):
 
 
 class ChatShareRequestRepository(Protocol):
-    def create(self, user_id: int, now: datetime) -> int:
+    def get_or_create(self, user_id: int, idempotency_key: str, now: datetime) -> int:
         raise NotImplementedError
 
-    def is_valid(self, request_id: int, user_id: int, now: datetime) -> bool:
+    def reserve(
+        self,
+        request_id: int,
+        user_id: int,
+        chat_id: int,
+        update_id: int,
+        now: datetime,
+    ) -> ReservationResult:
         raise NotImplementedError
 
-    def consume(self, request_id: int, user_id: int, now: datetime) -> bool:
+    def finalize(
+        self, request_id: int, user_id: int, update_id: int, now: datetime
+    ) -> bool:
         raise NotImplementedError
 
 
@@ -126,10 +136,21 @@ class MemberRepository(Protocol):
 
 
 class SummarySelectionRepository(Protocol):
-    def create(self, user_id: int, chat_id: int, now: datetime) -> str:
+    def get_or_create(
+        self,
+        user_id: int,
+        chat_id: int,
+        idempotency_key: str,
+        now: datetime,
+    ) -> str:
         raise NotImplementedError
 
-    def resolve(self, token: str, user_id: int, now: datetime) -> int | None:
+    def reserve(
+        self, token: str, user_id: int, update_id: int, now: datetime
+    ) -> ReservationResult:
+        raise NotImplementedError
+
+    def finalize(self, token: str, user_id: int, update_id: int, now: datetime) -> bool:
         raise NotImplementedError
 
 

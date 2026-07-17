@@ -114,7 +114,7 @@ class OnDemandSummaryHandler:
                     message.chat_id,
                     self.copy.value("messages", "private_link_invalid"),
                 )
-                self._show_picker(message.user_id, message.chat_id)
+                self._show_picker(update.update_id, message.user_id, message.chat_id)
                 return
             self._verify_and_deliver(
                 chat_id=linked[0],
@@ -128,6 +128,7 @@ class OnDemandSummaryHandler:
         if _command_name(message.text) != "/summary":
             return
         self._handle_private_summary(
+            update_id=update.update_id,
             user_id=message.user_id,
             username=message.username,
             full_name=message.full_name,
@@ -137,6 +138,7 @@ class OnDemandSummaryHandler:
     def _handle_private_summary(
         self,
         *,
+        update_id: int,
         user_id: int,
         username: str,
         full_name: str,
@@ -148,7 +150,7 @@ class OnDemandSummaryHandler:
             if self._group_is_accessible(group[0], user_id)
         ]
         if not groups:
-            self._show_picker(user_id, destination_chat_id)
+            self._show_picker(update_id, user_id, destination_chat_id)
             return
         if len(groups) == 1:
             self._verify_and_deliver(
@@ -163,7 +165,12 @@ class OnDemandSummaryHandler:
         buttons = []
         current = self.now()
         for chat_id, title in groups:
-            token = self.selections.create(user_id, chat_id, current)
+            token = self.selections.get_or_create(
+                user_id,
+                chat_id,
+                f"update:{update_id}:known-group:{chat_id}",
+                current,
+            )
             buttons.append(
                 [
                     {
@@ -182,10 +189,15 @@ class OnDemandSummaryHandler:
         callback = update.callback
         if callback is None or not callback.data.startswith("summary_group:"):
             return
-        self.telegram.answer_callback_query(callback.callback_id)
         token = callback.data.removeprefix("summary_group:")
-        chat_id = self.selections.resolve(token, callback.user_id, self.now())
-        if chat_id is None:
+        reservation = self.selections.reserve(
+            token, callback.user_id, update.update_id, self.now()
+        )
+        state = _reservation_state(reservation)
+        if state == "finalized":
+            return
+        self.telegram.answer_callback_query(callback.callback_id)
+        if state == "unavailable" or reservation.chat_id is None:
             self.telegram.send_message(
                 callback.chat_id,
                 self.copy.value("messages", "group_choice_expired"),
@@ -195,34 +207,51 @@ class OnDemandSummaryHandler:
             user_id=callback.user_id,
             username="",
             full_name="",
-            chat_id=chat_id,
+            chat_id=reservation.chat_id,
             destination_chat_id=callback.chat_id,
         )
+        self.selections.finalize(token, callback.user_id, update.update_id, self.now())
 
     def _handle_chat_shared(self, update: IncomingUpdate) -> None:
         shared = update.chat_shared
-        if shared is None or not self.share_requests.is_valid(
-            shared.request_id, shared.user_id, self.now()
-        ):
+        if shared is None:
             return
-        if not self.chats.is_tracked(shared.shared_chat_id):
+        reservation = self.share_requests.reserve(
+            shared.request_id,
+            shared.user_id,
+            shared.shared_chat_id,
+            update.update_id,
+            self.now(),
+        )
+        state = _reservation_state(reservation)
+        if state in {"unavailable", "finalized"} or reservation.chat_id is None:
+            return
+        if not self.chats.is_tracked(reservation.chat_id):
             self.telegram.send_message(
                 shared.private_chat_id,
                 self.copy.value("messages", "selected_group_not_connected"),
             )
         else:
             self._verify_and_deliver(
-                chat_id=shared.shared_chat_id,
+                chat_id=reservation.chat_id,
                 user_id=shared.user_id,
                 username="",
                 full_name="",
                 destination_chat_id=shared.private_chat_id,
                 remove_keyboard=True,
             )
-        self.share_requests.consume(shared.request_id, shared.user_id, self.now())
+        self.share_requests.finalize(
+            shared.request_id, shared.user_id, update.update_id, self.now()
+        )
 
-    def _show_picker(self, user_id: int, destination_chat_id: int) -> None:
-        request_id = self.share_requests.create(user_id, self.now())
+    def _show_picker(
+        self, update_id: int, user_id: int, destination_chat_id: int
+    ) -> None:
+        request_id = self.share_requests.get_or_create(
+            user_id,
+            f"update:{update_id}:native-picker",
+            self.now(),
+        )
         self.telegram.send_message(
             destination_chat_id,
             self.copy.value("messages", "choose_group_native"),
@@ -294,6 +323,11 @@ class OnDemandSummaryHandler:
 
 def _membership_allowed(membership: TelegramMembership) -> bool:
     return membership.can_read
+
+
+def _reservation_state(reservation: object) -> str:
+    state = getattr(reservation, "state")
+    return str(getattr(state, "value", state))
 
 
 def _private_start_token(text: str) -> str | None:

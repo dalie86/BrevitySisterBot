@@ -236,3 +236,44 @@ def test_html_truncation_does_not_cut_entity() -> None:
 
     assert len(result) <= 3900
     assert not result.removesuffix("…").endswith(("&", "&a", "&am", "&amp"))
+
+
+def test_prompt_uses_exact_catalog_transcript_line_and_user_templates() -> None:
+    service, llm, _ = make_service(5)
+    expected_lines = [
+        service.copy.render(
+            "prompts",
+            "transcript_line",
+            iso_datetime=message.sent_at.isoformat(),
+            participant_name=message.full_name,
+            message_text=message.text,
+        )
+        for message in service.messages.items
+    ]
+
+    service.generate(-1001, SummaryKind.ON_DEMAND, 42, NOW)
+
+    assert llm.user_prompts == [
+        service.copy.render("prompts", "user", transcript="\n".join(expected_lines))
+    ]
+
+
+def test_repair_uses_catalog_template_and_caps_invalid_response_at_6000() -> None:
+    invalid = "x" * 7000
+
+    class RepairLlm(FakeLlm):
+        def generate_summary(self, system_prompt, user_prompt):
+            self.system_prompts.append(system_prompt)
+            self.user_prompts.append(user_prompt)
+            if len(self.user_prompts) == 1:
+                return LlmResult(invalid, "groq", "model", 10)
+            return LlmResult('{"headline":"fixed","topics":[]}', "groq", "model", 10)
+
+    llm = RepairLlm()
+    service, _, _ = make_service(5, llm)
+
+    service.generate(-1001, SummaryKind.ON_DEMAND, 42, NOW)
+
+    assert llm.user_prompts[1] == service.copy.render(
+        "prompts", "repair", invalid_model_response=invalid[:6000]
+    )

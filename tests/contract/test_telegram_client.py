@@ -162,3 +162,4 @@ def test_set_webhook_subscribes_to_membership_updates(monkeypatch) -> None:
         "callback_query",
         "chat_member",
     ]
+    assert captured["body"]["drop_pending_updates"] is False

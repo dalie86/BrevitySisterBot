@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pymysql
+import pytest
 
 from app.domain.models import StoredMessage
 from app.repositories.mysql import (
@@ -247,71 +248,119 @@ def test_share_request_retries_duplicate_and_expires_after_one_hour() -> None:
         "app.repositories.mysql.secrets.randbelow",
         side_effect=[0, 2**32 - 1],
     ):
-        request_id = repository.create(42, NOW)
+        request_id = repository.get_or_create(42, "update:1:native-picker", NOW)
 
     assert request_id == 2**31 - 1
-    assert len(connection.cursor_instance.executions) == 2
+    assert len(connection.cursor_instance.executions) == 3
     _, first_params = connection.cursor_instance.executions[0]
-    _, second_params = connection.cursor_instance.executions[1]
+    _, select_params = connection.cursor_instance.executions[1]
+    _, second_params = connection.cursor_instance.executions[2]
     assert first_params[0] == -(2**31)
+    assert select_params == ("update:1:native-picker",)
     assert second_params == (
         2**31 - 1,
         42,
+        "update:1:native-picker",
         NOW.replace(tzinfo=None) + timedelta(hours=1),
         NOW.replace(tzinfo=None),
     )
     assert connection.commits == 1
 
 
-def test_share_request_is_consumed_once() -> None:
+def test_share_request_finalize_is_update_owned() -> None:
     connection = RecordingConnection(rowcount=1)
     repository = mysql.MySqlChatShareRequestRepository(lambda: connection)
 
-    assert repository.consume(-77, 42, NOW) is True
+    assert repository.finalize(-77, 42, 200, NOW) is True
 
     sql, params = connection.cursor_instance.executions[0]
     assert "used_at IS NULL" in sql
-    assert "expires_at >=" in sql
-    assert params == (NOW.replace(tzinfo=None), -77, 42, NOW.replace(tzinfo=None))
+    assert "reserved_update_id = %s" in sql
+    assert params == (NOW.replace(tzinfo=None), -77, 42, 200)
 
 
-def test_share_request_validity_check_does_not_consume() -> None:
-    connection = RecordingConnection(fetchone_result={"valid": 1})
+def test_share_request_reservation_locks_and_claims_chat_for_update() -> None:
+    connection = RecordingConnection(
+        fetchone_result={
+            "reserved_update_id": None,
+            "reserved_chat_id": None,
+            "used_at": None,
+            "expires_at": NOW.replace(tzinfo=None) + timedelta(hours=1),
+        }
+    )
     repository = mysql.MySqlChatShareRequestRepository(lambda: connection)
 
-    assert repository.is_valid(-77, 42, NOW) is True
+    result = repository.reserve(-77, 42, -1001, 200, NOW)
 
-    sql, params = connection.cursor_instance.executions[0]
-    assert "SELECT 1 AS valid" in sql
-    assert "used_at IS NULL" in sql
-    assert "expires_at >=" in sql
-    assert "UPDATE" not in sql
-    assert params == (-77, 42, NOW.replace(tzinfo=None))
-    assert connection.commits == 0
-
-
-def test_summary_selection_resolve_locks_and_deletes_token() -> None:
-    connection = RecordingConnection(fetchone_result={"chat_id": -1001})
-    repository = mysql.MySqlSummarySelectionRepository(lambda: connection)
-
-    assert repository.resolve("opaque", 42, NOW) == -1001
-
-    select_sql, select_params = connection.cursor_instance.executions[0]
-    delete_sql, delete_params = connection.cursor_instance.executions[1]
-    assert "FOR UPDATE" in select_sql
-    assert "expires_at >=" in select_sql
-    assert select_params == ("opaque", 42, NOW.replace(tzinfo=None))
-    assert "DELETE FROM summary_selections" in delete_sql
-    assert delete_params == ("opaque", 42)
+    assert result.state.value == "acquired"
+    assert result.chat_id == -1001
+    assert "FOR UPDATE" in connection.cursor_instance.executions[0][0]
+    assert connection.cursor_instance.executions[1][1] == (200, -1001, -77, 42)
     assert connection.commits == 1
 
 
-def test_missing_summary_selection_commits_without_delete() -> None:
+@pytest.mark.parametrize(
+    ("owner", "reserved_chat_id", "used_at", "requested_chat_id", "expected"),
+    [
+        (200, -1001, None, -1001, "resumed"),
+        (201, -1001, None, -1001, "unavailable"),
+        (200, -1001, None, -1002, "unavailable"),
+        (200, -1001, NOW, -1001, "finalized"),
+    ],
+)
+def test_share_request_reservation_distinguishes_owner_and_chat_states(
+    owner, reserved_chat_id, used_at, requested_chat_id, expected
+) -> None:
+    connection = RecordingConnection(
+        fetchone_result={
+            "reserved_update_id": owner,
+            "reserved_chat_id": reserved_chat_id,
+            "used_at": used_at,
+            "expires_at": NOW.replace(tzinfo=None) + timedelta(hours=1),
+        }
+    )
+    repository = mysql.MySqlChatShareRequestRepository(lambda: connection)
+
+    result = repository.reserve(-77, 42, requested_chat_id, 200, NOW)
+
+    assert result.state.value == expected
+    assert result.chat_id == (-1001 if expected in {"resumed", "finalized"} else None)
+    assert len(connection.cursor_instance.executions) == 1
+    assert connection.commits == 1
+
+
+@pytest.mark.parametrize(
+    ("owner", "consumed_at", "expected"),
+    [(200, None, "resumed"), (201, None, "unavailable"), (200, NOW, "finalized")],
+)
+def test_summary_selection_reservation_distinguishes_owner_states(
+    owner, consumed_at, expected
+) -> None:
+    connection = RecordingConnection(
+        fetchone_result={
+            "chat_id": -1001,
+            "reserved_update_id": owner,
+            "consumed_at": consumed_at,
+            "expires_at": NOW.replace(tzinfo=None) + timedelta(hours=1),
+        }
+    )
+    repository = mysql.MySqlSummarySelectionRepository(lambda: connection)
+
+    result = repository.reserve("opaque", 42, 200, NOW)
+
+    assert result.state.value == expected
+    assert result.chat_id == (-1001 if expected != "unavailable" else None)
+    assert len(connection.cursor_instance.executions) == 1
+    assert connection.commits == 1
+
+
+def test_missing_summary_selection_is_unavailable() -> None:
     connection = RecordingConnection(fetchone_result=None)
     repository = mysql.MySqlSummarySelectionRepository(lambda: connection)
 
-    assert repository.resolve("missing", 42, NOW) is None
+    result = repository.reserve("missing", 42, 200, NOW)
 
+    assert result.state.value == "unavailable"
     assert len(connection.cursor_instance.executions) == 1
     assert "FOR UPDATE" in connection.cursor_instance.executions[0][0]
     assert connection.commits == 1

@@ -16,7 +16,14 @@ import pymysql
 from pymysql.connections import Connection
 
 from app.config import Settings
-from app.domain.models import GeneratedSummary, QueuedUpdate, StoredMessage, UpdateStatus
+from app.domain.models import (
+    GeneratedSummary,
+    QueuedUpdate,
+    ReservationResult,
+    ReservationState,
+    StoredMessage,
+    UpdateStatus,
+)
 
 ConnectionFactory = Callable[[], Any]
 
@@ -54,12 +61,18 @@ class MySqlDatabase:
             cursorclass=pymysql.cursors.DictCursor,
         )
 
-    def execute_script(self, sql: str) -> None:
+    def execute_script(self, sql: str, migration_name: str | None = None) -> None:
         connection = self.connect()
         try:
             with connection.cursor() as cursor:
                 for statement in _split_sql_statements(sql):
-                    cursor.execute(statement)
+                    try:
+                        cursor.execute(statement)
+                    except pymysql.MySQLError as exc:
+                        if not _is_tolerated_duplicate_ddl(
+                            migration_name, statement, exc
+                        ):
+                            raise
             connection.commit()
         except Exception:
             connection.rollback()
@@ -105,6 +118,48 @@ class MySqlDatabase:
         finally:
             connection.close()
 
+    def verify_migration(self, filename: str) -> None:
+        if filename != "002_private_summary_onboarding.sql":
+            return
+        connection = self.connect()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT table_name, column_name, is_nullable
+                    FROM information_schema.columns
+                    WHERE table_schema = DATABASE()
+                      AND table_name IN (
+                        'tracked_chats', 'chat_share_requests', 'summary_selections'
+                      )
+                    """
+                )
+                columns = {
+                    (str(row["table_name"]), str(row["column_name"])): str(
+                        row["is_nullable"]
+                    )
+                    for row in cursor.fetchall()
+                }
+                cursor.execute(
+                    """
+                    SELECT table_name, index_name, non_unique
+                    FROM information_schema.statistics
+                    WHERE table_schema = DATABASE()
+                      AND table_name IN (
+                        'tracked_chats', 'chat_share_requests', 'summary_selections'
+                      )
+                    """
+                )
+                indexes = {
+                    (str(row["table_name"]), str(row["index_name"])): int(
+                        row["non_unique"]
+                    )
+                    for row in cursor.fetchall()
+                }
+            _verify_migration_002_schema(columns, indexes)
+        finally:
+            connection.close()
+
 
 def apply_migrations(database: MySqlDatabase, directory: Path) -> list[str]:
     applied_by_name = database.applied_migrations()
@@ -117,7 +172,8 @@ def apply_migrations(database: MySqlDatabase, directory: Path) -> list[str]:
             continue
         if existing_checksum is not None:
             raise RuntimeError(f"Applied migration changed: {path.name}")
-        database.execute_script(content.decode("utf-8"))
+        database.execute_script(content.decode("utf-8"), migration_name=path.name)
+        database.verify_migration(path.name)
         database.record_migration(path.name, checksum)
         applied.append(path.name)
     return applied
@@ -501,7 +557,7 @@ class MySqlChatShareRequestRepository:
     def __init__(self, connection_factory: ConnectionFactory) -> None:
         self.connection_factory = connection_factory
 
-    def create(self, user_id: int, now: datetime) -> int:
+    def get_or_create(self, user_id: int, idempotency_key: str, now: datetime) -> int:
         with _managed_connection(self.connection_factory) as connection:
             cursor = connection.cursor()
             db_now = _to_mysql_datetime(now)
@@ -511,36 +567,94 @@ class MySqlChatShareRequestRepository:
                     cursor.execute(
                         """
                         INSERT INTO chat_share_requests (
-                            request_id, user_id, expires_at, created_at
-                        ) VALUES (%s, %s, %s, %s)
+                            request_id, user_id, idempotency_key, expires_at, created_at
+                        ) VALUES (%s, %s, %s, %s, %s)
                         """,
-                        (request_id, user_id, db_now + timedelta(hours=1), db_now),
+                        (
+                            request_id,
+                            user_id,
+                            idempotency_key,
+                            db_now + timedelta(hours=1),
+                            db_now,
+                        ),
                     )
                 except pymysql.err.IntegrityError as exc:
-                    if exc.args[0] == 1062 and attempt < 4:
+                    if exc.args[0] != 1062:
+                        raise
+                    cursor.execute(
+                        """
+                        SELECT request_id
+                        FROM chat_share_requests
+                        WHERE idempotency_key = %s
+                        """,
+                        (idempotency_key,),
+                    )
+                    row = cursor.fetchone()
+                    if row is not None:
+                        connection.commit()
+                        return int(row["request_id"])
+                    if attempt < 4:
                         continue
                     raise
                 connection.commit()
                 return request_id
         raise RuntimeError("Unable to create chat share request")
 
-    def is_valid(self, request_id: int, user_id: int, now: datetime) -> bool:
+    def reserve(
+        self,
+        request_id: int,
+        user_id: int,
+        chat_id: int,
+        update_id: int,
+        now: datetime,
+    ) -> ReservationResult:
         with _managed_connection(self.connection_factory) as connection:
             cursor = connection.cursor()
             cursor.execute(
                 """
-                SELECT 1 AS valid
+                SELECT reserved_update_id, reserved_chat_id, used_at, expires_at
                 FROM chat_share_requests
                 WHERE request_id = %s
                   AND user_id = %s
-                  AND expires_at >= %s
-                  AND used_at IS NULL
+                FOR UPDATE
                 """,
-                (request_id, user_id, _to_mysql_datetime(now)),
+                (request_id, user_id),
             )
-            return cursor.fetchone() is not None
+            row = cursor.fetchone()
+            db_now = _to_mysql_datetime(now)
+            if row is None:
+                connection.commit()
+                return ReservationResult(ReservationState.UNAVAILABLE)
+            owner = row["reserved_update_id"]
+            reserved_chat_id = row["reserved_chat_id"]
+            if owner == update_id and row["used_at"] is not None:
+                connection.commit()
+                return ReservationResult(
+                    ReservationState.FINALIZED, int(reserved_chat_id)
+                )
+            if row["used_at"] is not None or row["expires_at"] < db_now:
+                connection.commit()
+                return ReservationResult(ReservationState.UNAVAILABLE)
+            if owner is None:
+                cursor.execute(
+                    """
+                    UPDATE chat_share_requests
+                    SET reserved_update_id = %s, reserved_chat_id = %s
+                    WHERE request_id = %s AND user_id = %s
+                    """,
+                    (update_id, chat_id, request_id, user_id),
+                )
+                connection.commit()
+                return ReservationResult(ReservationState.ACQUIRED, chat_id)
+            if owner == update_id and int(reserved_chat_id) == chat_id:
+                connection.commit()
+                return ReservationResult(ReservationState.RESUMED, chat_id)
+            connection.commit()
+            return ReservationResult(ReservationState.UNAVAILABLE)
 
-    def consume(self, request_id: int, user_id: int, now: datetime) -> bool:
+    def finalize(
+        self, request_id: int, user_id: int, update_id: int, now: datetime
+    ) -> bool:
         with _managed_connection(self.connection_factory) as connection:
             cursor = connection.cursor()
             db_now = _to_mysql_datetime(now)
@@ -550,10 +664,10 @@ class MySqlChatShareRequestRepository:
                 SET used_at = %s
                 WHERE request_id = %s
                   AND user_id = %s
-                  AND expires_at >= %s
+                  AND reserved_update_id = %s
                   AND used_at IS NULL
                 """,
-                (db_now, request_id, user_id, db_now),
+                (db_now, request_id, user_id, update_id),
             )
             consumed = cursor.rowcount == 1
             connection.commit()
@@ -828,50 +942,118 @@ class MySqlSummarySelectionRepository:
     def __init__(self, connection_factory: ConnectionFactory) -> None:
         self.connection_factory = connection_factory
 
-    def create(self, user_id: int, chat_id: int, now: datetime) -> str:
-        token = secrets.token_hex(16)
+    def get_or_create(
+        self,
+        user_id: int,
+        chat_id: int,
+        idempotency_key: str,
+        now: datetime,
+    ) -> str:
         with _managed_connection(self.connection_factory) as connection:
             cursor = connection.cursor()
             db_now = _to_mysql_datetime(now)
-            cursor.execute(
-                """
-                INSERT INTO summary_selections (
-                    selection_token, user_id, chat_id, expires_at, created_at
-                ) VALUES (%s, %s, %s, %s, %s)
-                """,
-                (token, user_id, chat_id, db_now + timedelta(hours=1), db_now),
-            )
-            connection.commit()
-        return token
+            for attempt in range(5):
+                token = secrets.token_hex(16)
+                try:
+                    cursor.execute(
+                        """
+                        INSERT INTO summary_selections (
+                            selection_token, user_id, chat_id, idempotency_key,
+                            expires_at, created_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            token,
+                            user_id,
+                            chat_id,
+                            idempotency_key,
+                            db_now + timedelta(hours=1),
+                            db_now,
+                        ),
+                    )
+                except pymysql.err.IntegrityError as exc:
+                    if exc.args[0] != 1062:
+                        raise
+                    cursor.execute(
+                        """
+                        SELECT selection_token
+                        FROM summary_selections
+                        WHERE idempotency_key = %s
+                        """,
+                        (idempotency_key,),
+                    )
+                    row = cursor.fetchone()
+                    if row is not None:
+                        connection.commit()
+                        return str(row["selection_token"])
+                    if attempt < 4:
+                        continue
+                    raise
+                connection.commit()
+                return token
+        raise RuntimeError("Unable to create summary selection")
 
-    def resolve(self, token: str, user_id: int, now: datetime) -> int | None:
+    def reserve(
+        self, token: str, user_id: int, update_id: int, now: datetime
+    ) -> ReservationResult:
         with _managed_connection(self.connection_factory) as connection:
             cursor = connection.cursor()
             cursor.execute(
                 """
-                SELECT chat_id
+                SELECT chat_id, reserved_update_id, consumed_at, expires_at
                 FROM summary_selections
                 WHERE selection_token = %s
                   AND user_id = %s
-                  AND expires_at >= %s
                 FOR UPDATE
                 """,
-                (token, user_id, _to_mysql_datetime(now)),
+                (token, user_id),
             )
             row = cursor.fetchone()
             if row is None:
                 connection.commit()
-                return None
+                return ReservationResult(ReservationState.UNAVAILABLE)
+            chat_id = int(row["chat_id"])
+            owner = row["reserved_update_id"]
+            if owner == update_id and row["consumed_at"] is not None:
+                connection.commit()
+                return ReservationResult(ReservationState.FINALIZED, chat_id)
+            if row["consumed_at"] is not None or row["expires_at"] < _to_mysql_datetime(now):
+                connection.commit()
+                return ReservationResult(ReservationState.UNAVAILABLE)
+            if owner is None:
+                cursor.execute(
+                    """
+                    UPDATE summary_selections
+                    SET reserved_update_id = %s
+                    WHERE selection_token = %s AND user_id = %s
+                    """,
+                    (update_id, token, user_id),
+                )
+                connection.commit()
+                return ReservationResult(ReservationState.ACQUIRED, chat_id)
+            if owner == update_id:
+                connection.commit()
+                return ReservationResult(ReservationState.RESUMED, chat_id)
+            connection.commit()
+            return ReservationResult(ReservationState.UNAVAILABLE)
+
+    def finalize(self, token: str, user_id: int, update_id: int, now: datetime) -> bool:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
             cursor.execute(
                 """
-                DELETE FROM summary_selections
+                UPDATE summary_selections
+                SET consumed_at = %s
                 WHERE selection_token = %s
                   AND user_id = %s
+                  AND reserved_update_id = %s
+                  AND consumed_at IS NULL
                 """,
-                (token, user_id),
+                (_to_mysql_datetime(now), token, user_id, update_id),
             )
+            finalized = cursor.rowcount == 1
             connection.commit()
-            return int(row["chat_id"])
+            return finalized
 
 
 class MySqlLifecycleStore:
@@ -1487,6 +1669,75 @@ class MySqlMaintenanceStore:
 
 def _split_sql_statements(sql: str) -> list[str]:
     return [statement.strip() for statement in sql.split(";") if statement.strip()]
+
+
+def _is_tolerated_duplicate_ddl(
+    migration_name: str | None,
+    statement: str,
+    error: pymysql.MySQLError,
+) -> bool:
+    if migration_name != "002_private_summary_onboarding.sql" or not error.args:
+        return False
+    error_code = int(error.args[0])
+    normalized = " ".join(statement.upper().split())
+    if error_code == 1050:
+        return normalized.startswith("CREATE TABLE CHAT_SHARE_REQUESTS ")
+    if error_code == 1060:
+        return normalized.startswith("ALTER TABLE ") and " ADD COLUMN " in normalized
+    if error_code == 1061:
+        return normalized.startswith("ALTER TABLE ") and (
+            " ADD UNIQUE KEY " in normalized or " ADD KEY " in normalized
+        )
+    return False
+
+
+def _verify_migration_002_schema(
+    columns: dict[tuple[str, str], str],
+    indexes: dict[tuple[str, str], int],
+) -> None:
+    required_columns = {
+        ("tracked_chats", "private_link_token"): "NO",
+        ("chat_share_requests", "request_id"): "NO",
+        ("chat_share_requests", "user_id"): "NO",
+        ("chat_share_requests", "expires_at"): "NO",
+        ("chat_share_requests", "used_at"): "YES",
+        ("chat_share_requests", "created_at"): "NO",
+        ("chat_share_requests", "idempotency_key"): "NO",
+        ("chat_share_requests", "reserved_update_id"): "YES",
+        ("chat_share_requests", "reserved_chat_id"): "YES",
+        ("summary_selections", "selection_token"): "NO",
+        ("summary_selections", "user_id"): "NO",
+        ("summary_selections", "chat_id"): "NO",
+        ("summary_selections", "expires_at"): "NO",
+        ("summary_selections", "created_at"): "NO",
+        ("summary_selections", "idempotency_key"): "NO",
+        ("summary_selections", "reserved_update_id"): "YES",
+        ("summary_selections", "consumed_at"): "YES",
+    }
+    missing_columns = [
+        f"{table}.{column} ({nullable})"
+        for (table, column), nullable in required_columns.items()
+        if columns.get((table, column)) != nullable
+    ]
+    required_indexes = {
+        ("tracked_chats", "uq_tracked_chats_private_link"): 0,
+        ("chat_share_requests", "PRIMARY"): 0,
+        ("chat_share_requests", "idx_chat_share_requests_user"): 1,
+        ("chat_share_requests", "uq_chat_share_requests_idempotency"): 0,
+        ("chat_share_requests", "idx_chat_share_requests_reservation"): 1,
+        ("summary_selections", "PRIMARY"): 0,
+        ("summary_selections", "idx_summary_selections_user"): 1,
+        ("summary_selections", "uq_summary_selections_idempotency"): 0,
+        ("summary_selections", "idx_summary_selections_reservation"): 1,
+    }
+    missing_indexes = [
+        f"{table}.{index} ({non_unique})"
+        for (table, index), non_unique in required_indexes.items()
+        if indexes.get((table, index)) != non_unique
+    ]
+    if missing_columns or missing_indexes:
+        details = ", ".join(missing_columns + missing_indexes)
+        raise RuntimeError(f"Migration 002 schema verification failed: {details}")
 
 
 def _to_mysql_datetime(value: datetime) -> datetime:

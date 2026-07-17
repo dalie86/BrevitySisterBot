@@ -29,6 +29,19 @@ class SummaryStatus(str, Enum):
     FAILED = "failed"
 
 
+class ReservationState(str, Enum):
+    ACQUIRED = "acquired"
+    RESUMED = "resumed"
+    FINALIZED = "finalized"
+    UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True)
+class ReservationResult:
+    state: ReservationState
+    chat_id: int | None = None
+
+
 @dataclass(frozen=True)
 class TelegramMembership:
     status: str

@@ -1,6 +1,15 @@
 from pathlib import Path
 
-from app.repositories.mysql import migration_files
+import pymysql
+import pytest
+
+from app.repositories.mysql import (
+    MySqlDatabase,
+    _split_sql_statements,
+    _verify_migration_002_schema,
+    apply_migrations,
+    migration_files,
+)
 
 
 def test_initial_migration_defines_required_tables_and_unique_keys() -> None:
@@ -51,3 +60,130 @@ def test_migration_files_are_sorted_and_only_include_sql(tmp_path: Path) -> None
         "001_first.sql",
         "002_second.sql",
     ]
+
+
+class RestartCursor:
+    def __init__(self, completed: set[str], interrupt_after: int | None) -> None:
+        self.completed = completed
+        self.interrupt_after = interrupt_after
+        self.new_boundaries = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def execute(self, statement: str) -> None:
+        normalized = " ".join(statement.split())
+        if normalized in self.completed:
+            if "ADD COLUMN" in normalized:
+                raise pymysql.err.OperationalError(1060, "Duplicate column")
+            if "ADD UNIQUE KEY" in normalized or "ADD KEY" in normalized:
+                raise pymysql.err.OperationalError(1061, "Duplicate key")
+            if normalized.startswith("CREATE TABLE"):
+                raise pymysql.err.OperationalError(1050, "Table exists")
+            return
+        if self.interrupt_after is not None and self.new_boundaries == self.interrupt_after:
+            raise ConnectionError("simulated migration interruption")
+        self.completed.add(normalized)
+        self.new_boundaries += 1
+
+
+class RestartConnection:
+    def __init__(self, completed: set[str], interrupt_after: int | None) -> None:
+        self.cursor_instance = RestartCursor(completed, interrupt_after)
+
+    def cursor(self):
+        return self.cursor_instance
+
+    def commit(self):
+        return None
+
+    def rollback(self):
+        return None
+
+    def close(self):
+        return None
+
+
+MIGRATION_002_SQL = Path("migrations/002_private_summary_onboarding.sql").read_text(
+    encoding="utf-8"
+)
+
+
+@pytest.mark.parametrize(
+    "interrupt_after", range(1, len(_split_sql_statements(MIGRATION_002_SQL)))
+)
+def test_migration_002_restarts_after_each_original_ddl_boundary(interrupt_after) -> None:
+    completed: set[str] = set()
+    database = object.__new__(MySqlDatabase)
+    database.connect = lambda: RestartConnection(completed, interrupt_after)  # type: ignore[method-assign]
+
+    with pytest.raises(ConnectionError, match="interruption"):
+        database.execute_script(
+            MIGRATION_002_SQL, migration_name="002_private_summary_onboarding.sql"
+        )
+
+    database.connect = lambda: RestartConnection(completed, None)  # type: ignore[method-assign]
+    database.execute_script(
+        MIGRATION_002_SQL, migration_name="002_private_summary_onboarding.sql"
+    )
+
+
+def test_migration_002_propagates_unrelated_sql_error() -> None:
+    class BrokenCursor(RestartCursor):
+        def execute(self, statement: str) -> None:
+            raise pymysql.err.OperationalError(1142, "command denied")
+
+    class BrokenConnection(RestartConnection):
+        def cursor(self):
+            return BrokenCursor(set(), None)
+
+    database = object.__new__(MySqlDatabase)
+    database.connect = lambda: BrokenConnection(set(), None)  # type: ignore[method-assign]
+
+    with pytest.raises(pymysql.err.OperationalError) as raised:
+        database.execute_script(
+            "ALTER TABLE tracked_chats ADD COLUMN private_link_token CHAR(32) NULL;",
+            migration_name="002_private_summary_onboarding.sql",
+        )
+
+    assert raised.value.args[0] == 1142
+
+
+def test_migration_002_verifies_schema_before_recording_checksum(tmp_path: Path) -> None:
+    (tmp_path / "002_private_summary_onboarding.sql").write_text(
+        "SELECT 1;", encoding="utf-8"
+    )
+
+    class FakeDatabase:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def applied_migrations(self):
+            return {}
+
+        def execute_script(self, sql, migration_name=None):
+            self.calls.append(("execute", migration_name))
+
+        def verify_migration(self, migration_name):
+            self.calls.append(("verify", migration_name))
+
+        def record_migration(self, filename, checksum):
+            self.calls.append(("record", filename))
+
+    database = FakeDatabase()
+
+    apply_migrations(database, tmp_path)
+
+    assert database.calls == [
+        ("execute", "002_private_summary_onboarding.sql"),
+        ("verify", "002_private_summary_onboarding.sql"),
+        ("record", "002_private_summary_onboarding.sql"),
+    ]
+
+
+def test_migration_002_schema_verification_rejects_missing_postcondition() -> None:
+    with pytest.raises(RuntimeError, match="tracked_chats.private_link_token"):
+        _verify_migration_002_schema({}, {})
