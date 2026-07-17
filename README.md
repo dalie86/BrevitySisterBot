@@ -43,16 +43,24 @@ API-вызова. Recovery пропускает уже начатый эффек
 ## Команды бота
 
 - `/enable_daily` — подключить группу, только для администратора;
-- `/disable_daily` — выключить ежедневную публикацию, буферизация продолжается;
+- `/disable_daily` — выключить ежедневную публикацию; сообщения продолжат
+  накапливаться для ручных сводок;
 - `/summary` в группе — подготовить сводку и опубликовать её в группе;
 - `/summary` в личном чате — получить сводку приватно.
 
-Первый групповой `/summary` связывает участника с группой. Если в личном чате
-доступно несколько групп, бот показывает безопасный список кнопок. Перед
-приватной выдачей членство повторно проверяется через `getChatMember`.
+Подключить группу можно, только когда и вызвавший `/enable_daily` пользователь,
+и сам бот являются её администраторами. После подключения бот публикует кнопку
+«Получить сводку лично»: она открывает личный чат, проверяет членство и сразу
+запускает подготовку сводки выбранной группы.
+
+Можно также сразу отправить `/summary` в личном чате, не выполняя команду в
+группе заранее. Если у пользователя нет запомненной доступной группы, бот
+показывает нативную кнопку выбора Telegram; если доступно несколько известных
+групп — предлагает выбрать одну из них. Перед каждой приватной выдачей членство
+повторно проверяется через `getChatMember`.
 
 Порог автоматической сводки — 15 сообщений, ручной — 5. Перед генерацией бот
-предупреждает, что обработка может занять до 1–2 минут.
+предупреждает, что обработка может занять до 2 минут.
 
 ## Локальная установка
 
@@ -75,7 +83,14 @@ cp .env.example .env
 ```bash
 .venv/bin/python -m pytest -q
 .venv/bin/ruff check app scripts tests passenger_wsgi.py public_html/passenger_wsgi.py
+.venv/bin/python scripts/render_copy_deck.py --check
 ```
+
+Пользовательские тексты, шаблоны сводки и LLM-промпты находятся в
+[`content/bot_copy.ru.toml`](content/bot_copy.ru.toml). После изменения TOML
+перезапустите процесс бота и перегенерируйте редакторскую копию командой
+`.venv/bin/python scripts/render_copy_deck.py`; режим `--check` проверяет, что
+[`docs/BOT_COPY_RU.md`](docs/BOT_COPY_RU.md) синхронизирован, не изменяя файл.
 
 ## Beget
 
@@ -93,6 +108,7 @@ https://brevity.prosto-kosmos.ru/telegram/webhook
   .env
   .venv/
   app/
+  content/
   migrations/
   scripts/
   public_html/
@@ -108,7 +124,9 @@ https://brevity.prosto-kosmos.ru/telegram/webhook
 2. В BotFather отключить privacy mode, иначе бот не получит обычные сообщения
    группы и не сможет составить сводку.
 3. В настройках проекта Groq включить Zero Data Retention и создать API key.
-4. Создать remote `.env` по [`.env.example`](.env.example).
+4. Создать remote `.env` по [`.env.example`](.env.example). Обязательно задать
+   `TELEGRAM_BOT_USERNAME` без символа `@`: он нужен для групповой кнопки и
+   private deep link.
 5. Создать локальный `.env.hosting` по
    [`hosting.env.example`](hosting.env.example).
 6. Настроить Python/Passenger для каталога поддомена.
@@ -118,9 +136,12 @@ https://brevity.prosto-kosmos.ru/telegram/webhook
 scripts/deploy_beget.exp
 ```
 
-Deploy не переносит `.env`, SQLite, backup, логи, `.git` и локальные virtualenv.
-После загрузки он устанавливает зависимости, применяет миграции и создаёт
-`tmp/restart.txt` для перезапуска Passenger.
+Deploy не переносит `.env`, SQLite, backup, логи, `.git` и локальные virtualenv,
+но загружает runtime-каталог `content/` вместе с приложением. После загрузки он
+до применения миграций запускает `scripts/backup_db.sh`, затем устанавливает
+зависимости, применяет миграции (включая `002_private_summary_onboarding.sql`) и
+создаёт `tmp/restart.txt` для перезапуска Passenger. Такой порядок сохраняет
+предмиграционную копию MySQL и доставляет TOML до перезапуска процесса.
 
 После первого deploy:
 
@@ -128,6 +149,10 @@ Deploy не переносит `.env`, SQLite, backup, логи, `.git` и ло�
 .venv/bin/python scripts/set_webhook.py
 .venv/bin/python scripts/smoke_preview.py
 ```
+
+`set_webhook.py` подписывает webhook на `message`, `callback_query` и
+`chat_member`. События `chat_member` нужны, чтобы актуализировать доступ к
+приватным сводкам после вступления пользователя в группу или выхода из неё.
 
 Задания из [`crontab.beget.example`](crontab.beget.example) нужно добавить
 через панель Beget, заменив `LOGIN` на логин аккаунта.

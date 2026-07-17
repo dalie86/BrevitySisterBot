@@ -117,7 +117,9 @@ class FakeSummaryService:
             summary_date="2026-07-16",
             kind=kind,
             source_hash="hash",
-            text="<b>📝 Сводка за сегодня</b>\n\nГлавное",
+            text=COPY.render(
+                "summary", "document", headline="Главное", topics_block=""
+            ),
             status=SummaryStatus.PREPARED,
         )
 

@@ -16,6 +16,13 @@ def test_deploy_excludes_secrets_runtime_data_and_mvp_databases() -> None:
         assert excluded in script
 
 
+def test_deploy_script_does_not_exclude_runtime_content() -> None:
+    script = Path("scripts/deploy_beget.exp").read_text(encoding="utf-8")
+
+    assert "--exclude content" not in script
+    assert "./ $target" in script
+
+
 def test_public_wsgi_entry_adds_project_root_without_secrets() -> None:
     entry = Path("public_html/passenger_wsgi.py").read_text(encoding="utf-8")
 
