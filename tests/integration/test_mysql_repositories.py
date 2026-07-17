@@ -275,6 +275,48 @@ def test_share_request_is_consumed_once() -> None:
     assert params == (NOW.replace(tzinfo=None), -77, 42, NOW.replace(tzinfo=None))
 
 
+def test_share_request_validity_check_does_not_consume() -> None:
+    connection = RecordingConnection(fetchone_result={"valid": 1})
+    repository = mysql.MySqlChatShareRequestRepository(lambda: connection)
+
+    assert repository.is_valid(-77, 42, NOW) is True
+
+    sql, params = connection.cursor_instance.executions[0]
+    assert "SELECT 1 AS valid" in sql
+    assert "used_at IS NULL" in sql
+    assert "expires_at >=" in sql
+    assert "UPDATE" not in sql
+    assert params == (-77, 42, NOW.replace(tzinfo=None))
+    assert connection.commits == 0
+
+
+def test_summary_selection_resolve_locks_and_deletes_token() -> None:
+    connection = RecordingConnection(fetchone_result={"chat_id": -1001})
+    repository = mysql.MySqlSummarySelectionRepository(lambda: connection)
+
+    assert repository.resolve("opaque", 42, NOW) == -1001
+
+    select_sql, select_params = connection.cursor_instance.executions[0]
+    delete_sql, delete_params = connection.cursor_instance.executions[1]
+    assert "FOR UPDATE" in select_sql
+    assert "expires_at >=" in select_sql
+    assert select_params == ("opaque", 42, NOW.replace(tzinfo=None))
+    assert "DELETE FROM summary_selections" in delete_sql
+    assert delete_params == ("opaque", 42)
+    assert connection.commits == 1
+
+
+def test_missing_summary_selection_commits_without_delete() -> None:
+    connection = RecordingConnection(fetchone_result=None)
+    repository = mysql.MySqlSummarySelectionRepository(lambda: connection)
+
+    assert repository.resolve("missing", 42, NOW) is None
+
+    assert len(connection.cursor_instance.executions) == 1
+    assert "FOR UPDATE" in connection.cursor_instance.executions[0][0]
+    assert connection.commits == 1
+
+
 def test_remember_group_links_active_member() -> None:
     connection = RecordingConnection()
     repository = MySqlMemberRepository(lambda: connection)
@@ -310,15 +352,11 @@ def test_maintenance_purges_expired_share_requests() -> None:
     deleted = repository.purge_expired(NOW, retention_days=30)
 
     assert deleted["chat_share_requests"] == 1
-    statements = {
-        sql.strip(): params for sql, params in connection.cursor_instance.executions
-    }
-    assert (
-        "DELETE FROM chat_share_requests WHERE expires_at < %s" in statements
+    statements = {sql.strip(): params for sql, params in connection.cursor_instance.executions}
+    assert "DELETE FROM chat_share_requests WHERE expires_at < %s" in statements
+    assert statements["DELETE FROM chat_share_requests WHERE expires_at < %s"] == (
+        NOW.replace(tzinfo=None),
     )
-    assert statements[
-        "DELETE FROM chat_share_requests WHERE expires_at < %s"
-    ] == (NOW.replace(tzinfo=None),)
 
 
 def test_telegram_effect_is_persisted_before_external_send() -> None:

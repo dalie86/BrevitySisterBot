@@ -80,6 +80,9 @@ class ChatShareRequestRepository(Protocol):
     def create(self, user_id: int, now: datetime) -> int:
         raise NotImplementedError
 
+    def is_valid(self, request_id: int, user_id: int, now: datetime) -> bool:
+        raise NotImplementedError
+
     def consume(self, request_id: int, user_id: int, now: datetime) -> bool:
         raise NotImplementedError
 

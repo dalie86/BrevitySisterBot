@@ -524,6 +524,22 @@ class MySqlChatShareRequestRepository:
                 return request_id
         raise RuntimeError("Unable to create chat share request")
 
+    def is_valid(self, request_id: int, user_id: int, now: datetime) -> bool:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT 1 AS valid
+                FROM chat_share_requests
+                WHERE request_id = %s
+                  AND user_id = %s
+                  AND expires_at >= %s
+                  AND used_at IS NULL
+                """,
+                (request_id, user_id, _to_mysql_datetime(now)),
+            )
+            return cursor.fetchone() is not None
+
     def consume(self, request_id: int, user_id: int, now: datetime) -> bool:
         with _managed_connection(self.connection_factory) as connection:
             cursor = connection.cursor()
@@ -838,11 +854,24 @@ class MySqlSummarySelectionRepository:
                 WHERE selection_token = %s
                   AND user_id = %s
                   AND expires_at >= %s
+                FOR UPDATE
                 """,
                 (token, user_id, _to_mysql_datetime(now)),
             )
             row = cursor.fetchone()
-            return int(row["chat_id"]) if row else None
+            if row is None:
+                connection.commit()
+                return None
+            cursor.execute(
+                """
+                DELETE FROM summary_selections
+                WHERE selection_token = %s
+                  AND user_id = %s
+                """,
+                (token, user_id),
+            )
+            connection.commit()
+            return int(row["chat_id"])
 
 
 class MySqlLifecycleStore:

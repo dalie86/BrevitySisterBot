@@ -53,16 +53,21 @@ class FakeShareRequests:
         self.next_id = -77
         self.created: list[tuple[int, datetime]] = []
         self.consumable: set[tuple[int, int]] = set()
+        self.consumed: list[tuple[int, int]] = []
 
     def create(self, user_id, now):
         self.created.append((user_id, now))
         return self.next_id
+
+    def is_valid(self, request_id, user_id, now):
+        return (request_id, user_id) in self.consumable
 
     def consume(self, request_id, user_id, now):
         key = (request_id, user_id)
         if key not in self.consumable:
             return False
         self.consumable.remove(key)
+        self.consumed.append(key)
         return True
 
 
@@ -78,7 +83,7 @@ class FakeSelections:
         return token
 
     def resolve(self, token, user_id, now):
-        return self.items.get((token, user_id))
+        return self.items.pop((token, user_id), None)
 
 
 class FakeTelegram:
@@ -241,6 +246,29 @@ def test_chat_shared_request_is_user_bound_and_one_use() -> None:
 
     assert members.remembered == [(-1001, 42)]
     assert len(summaries.calls) == 1
+    assert share_requests.consumed == [(-77, 42)]
+
+
+def test_chat_shared_retry_keeps_request_until_terminal_action_succeeds() -> None:
+    handler, chats, members, share_requests, telegram, summaries, _ = make_handler()
+    share_requests.consumable.add((-77, 42))
+    chats.tracked[-1001] = "Demo"
+    allow_group(telegram)
+    telegram.membership_error = TelegramApiError("temporary")
+
+    with pytest.raises(TelegramApiError, match="temporary"):
+        handler(chat_shared_update())
+
+    assert share_requests.is_valid(-77, 42, NOW) is True
+    assert share_requests.consumed == []
+
+    telegram.membership_error = None
+    handler(chat_shared_update())
+
+    assert members.remembered == [(-1001, 42)]
+    assert len(summaries.calls) == 1
+    assert share_requests.consumed == [(-77, 42)]
+    assert share_requests.is_valid(-77, 42, NOW) is False
 
 
 @pytest.mark.parametrize(
@@ -335,6 +363,28 @@ def test_callback_rechecks_bot_and_user_before_private_delivery() -> None:
     assert summaries.calls == []
     assert telegram.sent[-1][1] == COPY.value("messages", "membership_not_confirmed")
     assert telegram.answered_callbacks == ["callback"]
+
+
+def test_callback_selection_is_consumed_once() -> None:
+    handler, _, _, _, telegram, summaries, selections = make_handler()
+    token = selections.create(42, -1001, NOW)
+    allow_group(telegram)
+    callback = IncomingUpdate(
+        update_id=3,
+        callback=IncomingCallback(
+            callback_id="callback",
+            user_id=42,
+            chat_id=42,
+            data=f"summary_group:{token}",
+        ),
+    )
+
+    handler(callback)
+    handler(callback)
+
+    assert len(summaries.calls) == 1
+    assert telegram.sent[-1][1] == COPY.value("messages", "group_choice_expired")
+    assert telegram.answered_callbacks == ["callback", "callback"]
 
 
 def test_telegram_membership_failures_propagate() -> None:

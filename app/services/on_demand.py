@@ -201,7 +201,7 @@ class OnDemandSummaryHandler:
 
     def _handle_chat_shared(self, update: IncomingUpdate) -> None:
         shared = update.chat_shared
-        if shared is None or not self.share_requests.consume(
+        if shared is None or not self.share_requests.is_valid(
             shared.request_id, shared.user_id, self.now()
         ):
             return
@@ -210,15 +210,16 @@ class OnDemandSummaryHandler:
                 shared.private_chat_id,
                 self.copy.value("messages", "selected_group_not_connected"),
             )
-            return
-        self._verify_and_deliver(
-            chat_id=shared.shared_chat_id,
-            user_id=shared.user_id,
-            username="",
-            full_name="",
-            destination_chat_id=shared.private_chat_id,
-            remove_keyboard=True,
-        )
+        else:
+            self._verify_and_deliver(
+                chat_id=shared.shared_chat_id,
+                user_id=shared.user_id,
+                username="",
+                full_name="",
+                destination_chat_id=shared.private_chat_id,
+                remove_keyboard=True,
+            )
+        self.share_requests.consume(shared.request_id, shared.user_id, self.now())
 
     def _show_picker(self, user_id: int, destination_chat_id: int) -> None:
         request_id = self.share_requests.create(user_id, self.now())
