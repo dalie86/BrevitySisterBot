@@ -74,18 +74,19 @@ choose_group = "Выбрать группу"
 
 [summary]
 # Итоговый документ должен быть не длиннее 3900 символов.
-title = "📝 Сводка за сегодня"
-document = """{{title}}
+# Telegram отображает <b>...</b> жирным; динамический текст экранируется кодом.
+document = """<b>📝 Краткая сводка за сегодня</b>
 
-{{headline}}{{topics_block}}"""
+{{headline}}
+
+{{topics_block}}"""
 topic = """• {{topic_title}}
 {{topic_details}}"""
-topics_prefix = "\n\n"
 topics_separator = "\n\n"
 
 [fallback]
 # Детерминированная сводка, если внешняя модель недоступна или ответ невалиден.
-document = """{{title}}
+document = """<b>📝 Краткая сводка за сегодня</b>
 
 Сообщений за сегодня: {{message_count}}.
 Активные участники: {{participants}}.
