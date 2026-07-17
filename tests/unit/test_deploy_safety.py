@@ -45,10 +45,14 @@ def test_beget_defaults_to_python_310() -> None:
     assert 'set config(BEGET_PYTHON) "python3.10"' in script
 
 
-def test_deploy_bootstraps_missing_venv_with_beget_virtualenv() -> None:
+def test_deploy_rebuilds_invalid_venv_with_beget_virtualenv() -> None:
     script = Path("scripts/deploy_beget.exp").read_text(encoding="utf-8")
 
-    assert "if [ ! -x .venv/bin/python ]; then" in script
+    assert (
+        "if [ ! -x .venv/bin/python ] || [ -L .venv/bin/python ] || "
+        "! .venv/bin/python -m pip --version >/dev/null 2>&1; then"
+        in script
+    )
     assert "/usr/bin/virtualenv --copies -p %s --clear .venv" in script
     assert "} $config(BEGET_REMOTE_DIR) $config(BEGET_PYTHON)]" in script
     assert "%s -m venv .venv" not in script
