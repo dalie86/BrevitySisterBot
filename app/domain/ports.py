@@ -73,6 +73,9 @@ class ChatRepository(Protocol):
     def is_tracked(self, chat_id: int) -> bool:
         raise NotImplementedError
 
+    def tracked_count(self) -> int:
+        raise NotImplementedError
+
     def resolve_private_link(self, token: str) -> tuple[int, str] | None:
         raise NotImplementedError
 

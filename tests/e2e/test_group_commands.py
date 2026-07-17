@@ -28,6 +28,9 @@ class FakeChats:
     def is_tracked(self, chat_id) -> bool:
         return chat_id in self.tracked
 
+    def tracked_count(self) -> int:
+        return len(self.tracked)
+
 
 class FakeMembers:
     def __init__(self) -> None:
@@ -128,17 +131,19 @@ def build_handler(telegram=None):
 
 
 def test_enable_daily_requires_admin_and_tracks_group() -> None:
-    handler, chats, _, _, telegram, _ = build_handler()
+    handler, chats, members, _, telegram, _ = build_handler()
     telegram.memberships[42] = TelegramMembership("member", True)
 
     handler(parse_update(group_update("/enable_daily")))
     assert chats.tracked == set()
+    assert members.remembered == []
     assert "администратор" in telegram.sent[-1][1].lower()
 
     telegram.memberships[42] = TelegramMembership("administrator", True)
     handler(parse_update(group_update("/enable_daily", message_id=11)))
     assert chats.tracked == {-1001}
     assert chats.enabled[-1001] is True
+    assert members.remembered == [(-1001, 42)]
 
 
 def test_enable_publishes_private_summary_deep_link() -> None:

@@ -536,6 +536,13 @@ class MySqlTrackedChatRepository:
             )
             return cursor.fetchone() is not None
 
+    def tracked_count(self) -> int:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            cursor.execute("SELECT COUNT(*) AS tracked_count FROM tracked_chats")
+            row = cursor.fetchone()
+            return int(row["tracked_count"]) if row is not None else 0
+
     def resolve_private_link(self, token: str) -> tuple[int, str] | None:
         with _managed_connection(self.connection_factory) as connection:
             cursor = connection.cursor()

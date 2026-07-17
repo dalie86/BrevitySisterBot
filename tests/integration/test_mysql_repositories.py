@@ -28,11 +28,11 @@ class RecordingCursor:
         fetchall_result: list[dict] | None = None,
     ) -> None:
         self.rowcount = rowcount
-        self.executions: list[tuple[str, tuple]] = []
+        self.executions: list[tuple[str, tuple | None]] = []
         self.fetchone_result = fetchone_result
         self.fetchall_result = fetchall_result or []
 
-    def execute(self, sql: str, params: tuple) -> None:
+    def execute(self, sql: str, params: tuple | None = None) -> None:
         self.executions.append((sql, params))
 
     def fetchone(self) -> dict | None:
@@ -104,6 +104,18 @@ def test_add_message_uses_chat_and_telegram_message_identity() -> None:
     assert "INSERT IGNORE INTO messages" in sql
     assert params[0:2] == (-1001, 7)
     assert connection.commits == 1
+    assert connection.closed is True
+
+
+def test_chat_repository_counts_tracked_groups_regardless_of_daily_setting() -> None:
+    connection = RecordingConnection(fetchone_result={"tracked_count": 2})
+    repository = MySqlTrackedChatRepository(lambda: connection)
+
+    assert repository.tracked_count() == 2
+    sql, params = connection.cursor_instance.executions[0]
+    assert "COUNT(*) AS tracked_count" in sql
+    assert "WHERE enabled" not in sql
+    assert params is None
     assert connection.closed is True
 
 

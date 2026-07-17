@@ -73,6 +73,13 @@ class GroupUpdateHandler:
                     self.copy.value("messages", exc.copy_key),
                 )
                 return
+            self.members.remember_group(
+                message.chat_id,
+                message.user_id,
+                message.username,
+                message.full_name,
+                current,
+            )
             self.telegram.send_message(
                 message.chat_id,
                 self.copy.value("messages", "daily_enabled"),
