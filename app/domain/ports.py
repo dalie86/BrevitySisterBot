@@ -20,7 +20,7 @@ class Clock(Protocol):
 
 
 class UpdateRepository(Protocol):
-    def enqueue(self, update_id: int, payload: dict) -> bool:
+    def enqueue(self, update_id: int, payload: dict, now: datetime) -> bool:
         raise NotImplementedError
 
     def claim(

@@ -183,10 +183,10 @@ class MySqlUpdateRepository:
     def __init__(self, connection_factory: ConnectionFactory) -> None:
         self.connection_factory = connection_factory
 
-    def enqueue(self, update_id: int, payload: dict) -> bool:
+    def enqueue(self, update_id: int, payload: dict, now: datetime) -> bool:
         with _managed_connection(self.connection_factory) as connection:
             cursor = connection.cursor()
-            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            db_now = _to_mysql_datetime(now)
             cursor.execute(
                 """
                 INSERT IGNORE INTO telegram_updates (
@@ -197,9 +197,9 @@ class MySqlUpdateRepository:
                 (
                     update_id,
                     json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-                    now,
-                    now,
-                    now,
+                    db_now,
+                    db_now,
+                    db_now,
                 ),
             )
             connection.commit()

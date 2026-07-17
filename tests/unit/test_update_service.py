@@ -11,10 +11,9 @@ class FakeUpdateRepository:
         self.completed: list[int] = []
         self.failed: list[tuple[int, str]] = []
 
-    def enqueue(self, update_id: int, payload: dict) -> bool:
+    def enqueue(self, update_id: int, payload: dict, now: datetime) -> bool:
         if update_id in self.records:
             return False
-        now = datetime.now(timezone.utc)
         self.records[update_id] = QueuedUpdate(
             update_id=update_id,
             payload=payload,
@@ -80,6 +79,33 @@ class FakeUpdateRepository:
         self.failed.append((update_id, error))
 
 
+class TimingAwareUpdateRepository(FakeUpdateRepository):
+    """Models MySQL rejecting claims made before an update becomes available."""
+
+    def enqueue(
+        self,
+        update_id: int,
+        payload: dict,
+        now: datetime,
+    ) -> bool:
+        if update_id in self.records:
+            return False
+        self.records[update_id] = QueuedUpdate(
+            update_id=update_id,
+            payload=payload,
+            status=UpdateStatus.PENDING,
+            attempt_count=0,
+            available_at=now,
+        )
+        return True
+
+    def claim(self, update_id: int, now: datetime, lease_seconds: int) -> QueuedUpdate | None:
+        record = self.records.get(update_id)
+        if record is None or record.available_at > now:
+            return None
+        return super().claim(update_id, now, lease_seconds)
+
+
 def test_accept_persists_before_processing() -> None:
     repository = FakeUpdateRepository()
     observed = []
@@ -94,6 +120,21 @@ def test_accept_persists_before_processing() -> None:
     assert result.processed is True
     assert observed == [UpdateStatus.PROCESSING]
     assert repository.completed == [101]
+
+
+def test_accept_uses_same_timestamp_to_enqueue_and_claim_immediately() -> None:
+    repository = TimingAwareUpdateRepository()
+    handled = []
+    accepted_at = datetime(2026, 7, 16, 12, 0, tzinfo=timezone.utc)
+
+    result = UpdateService(repository, handled.append).accept(
+        {"update_id": 106},
+        accepted_at,
+    )
+
+    assert result.processed is True
+    assert handled == [{"update_id": 106}]
+    assert repository.records[106].available_at == accepted_at
 
 
 def test_accept_schedules_retry_after_handler_failure() -> None:
@@ -127,10 +168,10 @@ def test_duplicate_accept_does_not_process_twice() -> None:
 
 def test_recover_processes_available_updates_without_second_claim() -> None:
     repository = FakeUpdateRepository()
-    repository.enqueue(104, {"update_id": 104})
+    now = datetime(2026, 7, 16, 12, 0, tzinfo=timezone.utc)
+    repository.enqueue(104, {"update_id": 104}, now)
     handled = []
     service = UpdateService(repository, handled.append)
-    now = datetime(2026, 7, 16, 12, 0, tzinfo=timezone.utc)
 
     processed = service.recover(now, limit=10)
 

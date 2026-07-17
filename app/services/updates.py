@@ -35,7 +35,7 @@ class UpdateService:
 
     def accept(self, payload: dict, now: datetime) -> AcceptResult:
         update_id = int(payload["update_id"])
-        inserted = self.updates.enqueue(update_id, payload)
+        inserted = self.updates.enqueue(update_id, payload, now)
         if not inserted:
             return AcceptResult(update_id=update_id, inserted=False, processed=False)
         processed = self.process(update_id, now)

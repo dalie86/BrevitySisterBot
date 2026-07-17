@@ -1,4 +1,4 @@
-# BrevitySisterBot 0.2.0
+# BrevitySisterBot 0.2.1
 
 Production-версия Telegram-бота ежедневных групповых сводок:
 

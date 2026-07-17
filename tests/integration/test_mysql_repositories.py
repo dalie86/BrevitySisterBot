@@ -66,13 +66,20 @@ class RecordingConnection:
 def test_enqueue_serializes_payload_and_uses_duplicate_safe_insert() -> None:
     connection = RecordingConnection()
     repository = MySqlUpdateRepository(lambda: connection)
+    accepted_at = datetime(2026, 7, 16, 12, 0, 0, 123456, tzinfo=timezone.utc)
 
-    inserted = repository.enqueue(123, {"update_id": 123, "message": {"text": "Привет"}})
+    inserted = repository.enqueue(
+        123,
+        {"update_id": 123, "message": {"text": "Привет"}},
+        accepted_at,
+    )
 
     assert inserted is True
     sql, params = connection.cursor_instance.executions[0]
     assert "INSERT IGNORE INTO telegram_updates" in sql
     assert json.loads(params[1])["update_id"] == 123
+    expected_db_time = datetime(2026, 7, 16, 12, 0, 0, 123456)
+    assert params[2:] == (expected_db_time, expected_db_time, expected_db_time)
     assert connection.commits == 1
     assert connection.closed is True
 
