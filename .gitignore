@@ -16,3 +16,4 @@ backups/
 tmp/
 .pytest_cache/
 .ruff_cache/
+.worktrees/
