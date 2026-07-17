@@ -17,6 +17,35 @@ def test_copy_deck_is_current() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_copy_deck_preserves_distinct_summary_display_contexts() -> None:
+    deck = render_copy_deck.render(
+        render_copy_deck.BotCopy.load(render_copy_deck.COPY_PATH)
+    )
+
+    assert (
+        "Контекст: Внешняя модель вернула валидный JSON; количество тем — от "
+        "нуля до четырёх."
+    ) in deck
+    assert (
+        "Контекст: Groq недоступен, вернул ошибку или невалидный ответ; бот "
+        "составляет детерминированную локальную сводку без интерпретации "
+        "содержания."
+    ) in deck
+
+
+def test_copy_deck_preserves_private_onboarding_constraints() -> None:
+    deck = render_copy_deck.render(
+        render_copy_deck.BotCopy.load(render_copy_deck.COPY_PATH)
+    )
+
+    assert "нативный интерфейс Telegram или групповую deep link-ссылку" in deck
+    assert "проверяет доступ, после успеха запоминает группу" in deck
+    assert "сразу начинает готовить сегодняшнюю личную сводку" in deck
+    assert "Предварительно отправлять `/summary` в группе не требуется" in deck
+    assert "Одна запомненная доступная группа запускает подготовку сразу" in deck
+    assert "если их несколько, бот предлагает выбор" in deck
+
+
 def test_check_reports_drift_without_overwriting(
     tmp_path: Path, monkeypatch
 ) -> None:

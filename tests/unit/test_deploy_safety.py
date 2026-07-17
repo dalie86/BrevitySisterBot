@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -19,8 +20,21 @@ def test_deploy_excludes_secrets_runtime_data_and_mvp_databases() -> None:
 def test_deploy_script_does_not_exclude_runtime_content() -> None:
     script = Path("scripts/deploy_beget.exp").read_text(encoding="utf-8")
 
-    assert "--exclude content" not in script
+    exclude_arguments = re.findall(
+        r"--exclude(?:=|\s+)(?:\"([^\"]+)\"|'([^']+)'|([^\s\\]+))", script
+    )
+    for groups in exclude_arguments:
+        value = next(group for group in groups if group)
+        normalized = value.removeprefix("./").removeprefix("/").rstrip("/")
+        assert normalized != "content"
+        assert not normalized.startswith("content/")
     assert "./ $target" in script
+
+
+def test_deploy_backs_up_before_running_migrations() -> None:
+    script = Path("scripts/deploy_beget.exp").read_text(encoding="utf-8")
+
+    assert script.index("scripts/backup_db.sh") < script.index("scripts/migrate.py")
 
 
 def test_public_wsgi_entry_adds_project_root_without_secrets() -> None:

@@ -14,34 +14,83 @@ DECK_PATH = PROJECT_ROOT / "docs" / "BOT_COPY_RU.md"
 SECTION_ORDER = ("messages", "buttons", "summary", "fallback", "prompts")
 
 CONTEXTS = {
-    "group_commands": "Пользователь отправляет /start в группе.",
-    "daily_enabled": "Администратор успешно отправил /enable_daily.",
-    "daily_disabled": "Администратор успешно отправил /disable_daily.",
-    "group_not_connected": "Участник вызывает /summary в неподключённой группе.",
-    "admin_required": "Не-администратор меняет настройку ежедневной сводки.",
-    "summary_accepted": "Ручной запрос принят до обращения к модели.",
-    "summary_in_progress": "Тот же набор сообщений уже обрабатывается.",
-    "not_enough_messages": "Для ручной сводки накоплено меньше пяти сообщений.",
-    "choose_group_native": "В личном чате нет запомненной доступной группы.",
-    "choose_group_known": "В личном чате доступно несколько групп.",
-    "group_choice_expired": "Одночасовой выбор группы недействителен.",
-    "membership_not_confirmed": "Telegram не подтверждает членство перед выдачей.",
-    "bot_admin_required": "Бот не администратор при /enable_daily.",
-    "private_link_invalid": "Групповая deep link-ссылка неизвестна или повреждена.",
-    "selected_group_not_connected": "Выбранная через Telegram группа не подключена.",
-    "group_access_unverifiable": "Бот не может надёжно проверить выбранную группу.",
-    "get_private_summary": "Кнопка под успешным ответом на /enable_daily.",
-    "choose_group": "Нативная reply-кнопка Telegram request_chat.",
-    "document": "Шаблон итогового сообщения.",
-    "topic": "Повторяющийся блок одной темы.",
-    "topics_separator": "Разделитель блоков тем.",
-    "participants_unknown": "Подстановка, когда участники не определены.",
-    "message_item": "Строка одного сообщения в локальной сводке.",
-    "messages_separator": "Разделитель строк локальной сводки.",
-    "system": "Системная инструкция суммаризатору.",
-    "user": "Запрос с сегодняшней перепиской (последние 18 000 символов).",
-    "transcript_line": "Формат одной строки переписки.",
-    "repair": "Одна попытка исправления; первые 6000 символов ответа.",
+    ("messages", "group_commands"): "Пользователь отправляет /start в группе.",
+    ("messages", "daily_enabled"): "Администратор успешно отправил /enable_daily.",
+    ("messages", "daily_disabled"): "Администратор успешно отправил /disable_daily.",
+    (
+        "messages",
+        "group_not_connected",
+    ): "Участник вызывает /summary в неподключённой группе.",
+    (
+        "messages",
+        "admin_required",
+    ): "Не-администратор меняет настройку ежедневной сводки.",
+    ("messages", "summary_accepted"): "Ручной запрос принят до обращения к модели.",
+    (
+        "messages",
+        "summary_in_progress",
+    ): "Тот же набор сообщений уже обрабатывается.",
+    (
+        "messages",
+        "not_enough_messages",
+    ): "Для ручной сводки накоплено меньше пяти сообщений.",
+    (
+        "messages",
+        "choose_group_native",
+    ): "В личном чате нет запомненной доступной группы.",
+    ("messages", "choose_group_known"): "В личном чате доступно несколько групп.",
+    (
+        "messages",
+        "group_choice_expired",
+    ): "Одночасовой выбор группы недействителен.",
+    (
+        "messages",
+        "membership_not_confirmed",
+    ): "Telegram не подтверждает членство перед выдачей.",
+    ("messages", "bot_admin_required"): "Бот не администратор при /enable_daily.",
+    (
+        "messages",
+        "private_link_invalid",
+    ): "Групповая deep link-ссылка неизвестна или повреждена.",
+    (
+        "messages",
+        "selected_group_not_connected",
+    ): "Выбранная через Telegram группа не подключена.",
+    (
+        "messages",
+        "group_access_unverifiable",
+    ): "Бот не может надёжно проверить выбранную группу.",
+    (
+        "buttons",
+        "get_private_summary",
+    ): "Кнопка под успешным ответом на /enable_daily.",
+    ("buttons", "choose_group"): "Нативная reply-кнопка Telegram request_chat.",
+    (
+        "summary",
+        "document",
+    ): "Внешняя модель вернула валидный JSON; количество тем — от нуля до четырёх.",
+    ("summary", "topic"): "Повторяющийся блок одной темы.",
+    ("summary", "topics_separator"): "Разделитель блоков тем.",
+    (
+        "fallback",
+        "document",
+    ): "Groq недоступен, вернул ошибку или невалидный ответ; бот составляет детерминированную локальную сводку без интерпретации содержания.",
+    (
+        "fallback",
+        "participants_unknown",
+    ): "Подстановка, когда участники не определены.",
+    ("fallback", "message_item"): "Строка одного сообщения в локальной сводке.",
+    (
+        "fallback",
+        "messages_separator",
+    ): "Разделитель строк локальной сводки.",
+    ("prompts", "system"): "Системная инструкция суммаризатору.",
+    (
+        "prompts",
+        "user",
+    ): "Запрос с сегодняшней перепиской (последние 18 000 символов).",
+    ("prompts", "transcript_line"): "Формат одной строки переписки.",
+    ("prompts", "repair"): "Одна попытка исправления; первые 6000 символов ответа.",
 }
 
 PREAMBLE = """Этот файл генерируется из `content/bot_copy.ru.toml`. Не редактируйте
@@ -54,8 +103,9 @@ PREAMBLE = """Этот файл генерируется из `content/bot_copy.
   Москве; ручная сводка по `/summary` требует минимум 5 сообщений.
 - Ручной запрос работает и в группе, и напрямую в личном чате. Групповой
   результат видят все участники, личный — только запросивший пользователь.
-- Если доступно несколько групп, пользователь выбирает одну; при отсутствии
-  запомненной группы используется системный выбор Telegram.
+- Выбор через нативный интерфейс Telegram или групповую deep link-ссылку проверяет доступ, после успеха запоминает группу и сразу начинает готовить сегодняшнюю личную сводку.
+- Предварительно отправлять `/summary` в группе не требуется.
+- Одна запомненная доступная группа запускает подготовку сразу; если их несколько, бот предлагает выбор.
 - Подключать и отключать ежедневную публикацию может только администратор
   группы. Сам бот тоже должен быть администратором подключённой группы.
 - После подключения бот публикует кнопку личного получения, но не закрепляет
@@ -111,7 +161,7 @@ def render(copy: BotCopy) -> str:
         sections.extend((f"## `{section}`", ""))
         for key, value in copy.sections[section].items():
             sections.extend((f"### `{section}.{key}`", ""))
-            context = CONTEXTS.get(key)
+            context = CONTEXTS.get((section, key))
             if context:
                 sections.extend((f"Контекст: {context}", ""))
             sections.extend(("```text", value, "```", ""))
