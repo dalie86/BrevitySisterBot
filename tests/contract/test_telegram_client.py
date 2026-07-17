@@ -54,13 +54,55 @@ def test_send_message_calls_bot_api_and_returns_message_id(monkeypatch) -> None:
     }
 
 
-def test_get_chat_member_returns_status(monkeypatch) -> None:
+def test_send_message_includes_html_parse_mode(monkeypatch) -> None:
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse({"ok": True, "result": {"message_id": 55}})
+
+    monkeypatch.setattr("app.integrations.telegram.urllib.request.urlopen", fake_urlopen)
+
+    TelegramClient("token").send_message(42, "<b>title</b>", parse_mode="HTML")
+
+    assert captured["body"]["parse_mode"] == "HTML"
+
+
+def test_get_chat_member_returns_structured_active_membership(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.integrations.telegram.urllib.request.urlopen",
         lambda request, timeout: FakeResponse({"ok": True, "result": {"status": "administrator"}}),
     )
 
-    assert TelegramClient("token").get_chat_member(-1001, 42) == "administrator"
+    membership = TelegramClient("token").get_chat_member(-1001, 42)
+
+    assert membership.status == "administrator"
+    assert membership.is_member is True
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_is_member"),
+    [
+        ({"status": "restricted", "is_member": True}, True),
+        ({"status": "restricted", "is_member": False}, False),
+        ({"status": "left"}, False),
+        ({"status": "kicked"}, False),
+    ],
+)
+def test_get_chat_member_preserves_membership_state(
+    monkeypatch,
+    result: dict,
+    expected_is_member: bool,
+) -> None:
+    monkeypatch.setattr(
+        "app.integrations.telegram.urllib.request.urlopen",
+        lambda request, timeout: FakeResponse({"ok": True, "result": result}),
+    )
+
+    membership = TelegramClient("token").get_chat_member(-1001, 42)
+
+    assert membership.status == result["status"]
+    assert membership.is_member is expected_is_member
 
 
 def test_answer_callback_query_accepts_boolean_result(monkeypatch) -> None:

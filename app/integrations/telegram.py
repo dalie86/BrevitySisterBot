@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from app.domain.models import TelegramMembership
+
 
 @dataclass(frozen=True)
 class IncomingMessage:
@@ -31,10 +33,30 @@ class IncomingCallback:
 
 
 @dataclass(frozen=True)
+class IncomingChatShared:
+    request_id: int
+    shared_chat_id: int
+    title: str
+    user_id: int
+    private_chat_id: int
+
+
+@dataclass(frozen=True)
+class IncomingChatMember:
+    chat_id: int
+    user_id: int
+    username: str
+    full_name: str
+    new_membership: TelegramMembership
+
+
+@dataclass(frozen=True)
 class IncomingUpdate:
     update_id: int
     message: IncomingMessage | None = None
     callback: IncomingCallback | None = None
+    chat_shared: IncomingChatShared | None = None
+    chat_member: IncomingChatMember | None = None
 
 
 class TelegramApiError(RuntimeError):
@@ -60,23 +82,35 @@ class TelegramClient:
         chat_id: int,
         text: str,
         reply_markup: dict | None = None,
+        parse_mode: str | None = None,
     ) -> int:
         payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
+        if parse_mode is not None:
+            payload["parse_mode"] = parse_mode
         result = self._call("sendMessage", payload)
         if not isinstance(result, dict):
             raise TelegramApiError("Telegram sendMessage response is invalid")
         return int(result["message_id"])
 
-    def get_chat_member(self, chat_id: int, user_id: int) -> str:
+    def get_chat_member(self, chat_id: int, user_id: int) -> TelegramMembership:
         result = self._call(
             "getChatMember",
             {"chat_id": chat_id, "user_id": user_id},
         )
         if not isinstance(result, dict):
             raise TelegramApiError("Telegram getChatMember response is invalid")
-        return str(result["status"])
+        status = str(result["status"])
+        return TelegramMembership(
+            status=status,
+            is_member=bool(
+                result.get(
+                    "is_member",
+                    status in {"creator", "administrator", "member"},
+                )
+            ),
+        )
 
     def answer_callback_query(self, callback_id: str) -> None:
         self._call("answerCallbackQuery", {"callback_query_id": callback_id})
@@ -114,7 +148,49 @@ def parse_update(payload: dict[str, Any]) -> IncomingUpdate:
     update_id = int(payload["update_id"])
     raw_message = payload.get("message")
     if isinstance(raw_message, dict):
+        raw_chat_shared = raw_message.get("chat_shared")
+        if isinstance(raw_chat_shared, dict):
+            raw_chat = raw_message.get("chat") or {}
+            raw_user = raw_message.get("from") or {}
+            return IncomingUpdate(
+                update_id=update_id,
+                chat_shared=IncomingChatShared(
+                    request_id=int(raw_chat_shared["request_id"]),
+                    shared_chat_id=int(raw_chat_shared["chat_id"]),
+                    title=str(
+                        raw_chat_shared.get("title") or raw_chat_shared["chat_id"]
+                    ),
+                    user_id=int(raw_user["id"]),
+                    private_chat_id=int(raw_chat["id"]),
+                ),
+            )
         return IncomingUpdate(update_id=update_id, message=_parse_message(raw_message))
+
+    raw_chat_member = payload.get("chat_member")
+    if isinstance(raw_chat_member, dict):
+        raw_chat = raw_chat_member.get("chat") or {}
+        new_chat_member = raw_chat_member.get("new_chat_member") or {}
+        raw_user = new_chat_member.get("user") or {}
+        status = str(new_chat_member.get("status", ""))
+        username, full_name = _parse_user_identity(raw_user)
+        return IncomingUpdate(
+            update_id=update_id,
+            chat_member=IncomingChatMember(
+                chat_id=int(raw_chat["id"]),
+                user_id=int(raw_user["id"]),
+                username=username,
+                full_name=full_name,
+                new_membership=TelegramMembership(
+                    status=status,
+                    is_member=bool(
+                        new_chat_member.get(
+                            "is_member",
+                            status in {"creator", "administrator", "member"},
+                        )
+                    ),
+                ),
+            ),
+        )
 
     raw_callback = payload.get("callback_query")
     if isinstance(raw_callback, dict):
@@ -137,10 +213,7 @@ def parse_update(payload: dict[str, Any]) -> IncomingUpdate:
 def _parse_message(raw_message: dict[str, Any]) -> IncomingMessage:
     raw_chat = raw_message.get("chat") or {}
     raw_user = raw_message.get("from") or {}
-    first_name = str(raw_user.get("first_name", "")).strip()
-    last_name = str(raw_user.get("last_name", "")).strip()
-    full_name = " ".join(part for part in (first_name, last_name) if part)
-    username_value = str(raw_user.get("username", "")).strip()
+    username, full_name = _parse_user_identity(raw_user)
     text = str(raw_message.get("text") or raw_message.get("caption") or "").strip()
     return IncomingMessage(
         message_id=int(raw_message["message_id"]),
@@ -148,11 +221,22 @@ def _parse_message(raw_message: dict[str, Any]) -> IncomingMessage:
         chat_type=str(raw_chat.get("type", "")),
         chat_title=str(raw_chat.get("title") or raw_chat.get("username") or raw_chat["id"]),
         user_id=int(raw_user["id"]) if raw_user.get("id") is not None else None,
-        username=f"@{username_value}" if username_value else "",
-        full_name=full_name or username_value or "Unknown User",
+        username=username,
+        full_name=full_name,
         sender_is_bot=bool(raw_user.get("is_bot", False)),
         text=text,
         sent_at=datetime.fromtimestamp(int(raw_message["date"]), tz=timezone.utc),
+    )
+
+
+def _parse_user_identity(raw_user: dict[str, Any]) -> tuple[str, str]:
+    first_name = str(raw_user.get("first_name", "")).strip()
+    last_name = str(raw_user.get("last_name", "")).strip()
+    full_name = " ".join(part for part in (first_name, last_name) if part)
+    username_value = str(raw_user.get("username", "")).strip()
+    return (
+        f"@{username_value}" if username_value else "",
+        full_name or username_value or "Unknown User",
     )
 
 

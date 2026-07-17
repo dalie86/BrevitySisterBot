@@ -9,6 +9,7 @@ from app.domain.models import (
     QueuedUpdate,
     StoredMessage,
     SummaryKind,
+    TelegramMembership,
 )
 
 
@@ -133,10 +134,11 @@ class TelegramGateway(Protocol):
         chat_id: int,
         text: str,
         reply_markup: dict | None = None,
+        parse_mode: str | None = None,
     ) -> int:
         raise NotImplementedError
 
-    def get_chat_member(self, chat_id: int, user_id: int) -> str:
+    def get_chat_member(self, chat_id: int, user_id: int) -> TelegramMembership:
         raise NotImplementedError
 
     def answer_callback_query(self, callback_id: str) -> None:

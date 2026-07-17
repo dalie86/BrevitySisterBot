@@ -8,6 +8,7 @@ from contextvars import ContextVar
 from datetime import datetime
 from typing import Protocol
 
+from app.domain.models import TelegramMembership
 from app.domain.ports import TelegramGateway
 
 _current_update_id: ContextVar[int | None] = ContextVar("telegram_update_id", default=None)
@@ -65,16 +66,22 @@ class DurableTelegramGateway:
         chat_id: int,
         text: str,
         reply_markup: dict | None = None,
+        parse_mode: str | None = None,
     ) -> int:
         update_id = _current_update_id.get()
         if update_id is None:
-            return self.raw.send_message(chat_id, text, reply_markup)
+            return self.raw.send_message(chat_id, text, reply_markup, parse_mode)
 
         sequence = _effect_counter.get()
         _effect_counter.set(sequence + 1)
         effect_key = f"update:{update_id}:send_message:{sequence}"
         payload_hash = _payload_hash(
-            {"chat_id": chat_id, "text": text, "reply_markup": reply_markup}
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "reply_markup": reply_markup,
+                "parse_mode": parse_mode,
+            }
         )
         current = self.now()
         existing = self.effects.begin(
@@ -91,14 +98,19 @@ class DurableTelegramGateway:
             return 0
 
         try:
-            telegram_message_id = self.raw.send_message(chat_id, text, reply_markup)
+            telegram_message_id = self.raw.send_message(
+                chat_id,
+                text,
+                reply_markup,
+                parse_mode,
+            )
         except Exception as exc:
             self.effects.mark_review_required(effect_key, str(exc), self.now())
             raise
         self.effects.mark_sent(effect_key, telegram_message_id, self.now())
         return telegram_message_id
 
-    def get_chat_member(self, chat_id: int, user_id: int) -> str:
+    def get_chat_member(self, chat_id: int, user_id: int) -> TelegramMembership:
         return self.raw.get_chat_member(chat_id, user_id)
 
     def answer_callback_query(self, callback_id: str) -> None:

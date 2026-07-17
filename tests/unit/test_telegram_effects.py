@@ -9,8 +9,10 @@ from app.services.telegram_effects import (
 class FakeEffects:
     def __init__(self) -> None:
         self.records = {}
+        self.payload_hashes = []
 
     def begin(self, effect_key, update_id, method, payload_hash, now):
+        self.payload_hashes.append(payload_hash)
         record = self.records.get(effect_key)
         if record is not None:
             return record
@@ -28,8 +30,8 @@ class FakeTelegram:
     def __init__(self) -> None:
         self.sent = []
 
-    def send_message(self, chat_id, text, reply_markup=None):
-        self.sent.append((chat_id, text, reply_markup))
+    def send_message(self, chat_id, text, reply_markup=None, parse_mode=None):
+        self.sent.append((chat_id, text, reply_markup, parse_mode))
         return 77
 
     def get_chat_member(self, chat_id, user_id):
@@ -55,7 +57,7 @@ def test_recovered_update_does_not_repeat_started_send() -> None:
 
     assert first_id == 77
     assert recovered_id == 77
-    assert raw.sent == [(42, "Готово", None)]
+    assert raw.sent == [(42, "Готово", None, None)]
 
 
 def test_ambiguous_started_effect_is_skipped_on_recovery() -> None:
@@ -73,3 +75,41 @@ def test_ambiguous_started_effect_is_skipped_on_recovery() -> None:
 
     assert message_id == 0
     assert raw.sent == []
+
+
+def test_recovered_html_send_uses_same_payload_hash() -> None:
+    raw = FakeTelegram()
+    effects = FakeEffects()
+    gateway = DurableTelegramGateway(
+        raw=raw,
+        effects=effects,
+        now=lambda: datetime(2026, 7, 16, 12, 0, tzinfo=timezone.utc),
+    )
+
+    with telegram_update_scope(124):
+        first_id = gateway.send_message(42, "<b>Готово</b>", parse_mode="HTML")
+    with telegram_update_scope(124):
+        recovered_id = gateway.send_message(42, "<b>Готово</b>", parse_mode="HTML")
+
+    assert first_id == 77
+    assert recovered_id == 77
+    assert raw.sent == [(42, "<b>Готово</b>", None, "HTML")]
+    assert len(effects.payload_hashes) == 2
+    assert effects.payload_hashes[0] == effects.payload_hashes[1]
+
+
+def test_parse_mode_changes_durable_payload_hash() -> None:
+    raw = FakeTelegram()
+    effects = FakeEffects()
+    gateway = DurableTelegramGateway(
+        raw=raw,
+        effects=effects,
+        now=lambda: datetime(2026, 7, 16, 12, 0, tzinfo=timezone.utc),
+    )
+
+    with telegram_update_scope(125):
+        gateway.send_message(42, "Готово")
+    with telegram_update_scope(126):
+        gateway.send_message(42, "Готово", parse_mode="HTML")
+
+    assert effects.payload_hashes[0] != effects.payload_hashes[1]

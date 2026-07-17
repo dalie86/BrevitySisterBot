@@ -30,6 +30,22 @@ class SummaryStatus(str, Enum):
 
 
 @dataclass(frozen=True)
+class TelegramMembership:
+    status: str
+    is_member: bool
+
+    @property
+    def can_read(self) -> bool:
+        return self.status in {"creator", "administrator", "member"} or (
+            self.status == "restricted" and self.is_member
+        )
+
+    @property
+    def is_admin(self) -> bool:
+        return self.status in {"creator", "administrator"}
+
+
+@dataclass(frozen=True)
 class StoredMessage:
     telegram_message_id: int
     chat_id: int
