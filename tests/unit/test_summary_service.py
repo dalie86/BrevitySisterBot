@@ -1,6 +1,10 @@
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
+from app.content import BotCopy
 from app.domain.models import LlmResult, StoredMessage, SummaryKind
+from app.services import summaries as summaries_module
 from app.services.summaries import SummaryService
 
 
@@ -54,9 +58,13 @@ class FakeLlm:
         self.content = content
         self.call_count = 0
         self.error = None
+        self.system_prompts = []
+        self.user_prompts = []
 
     def generate_summary(self, system_prompt, user_prompt):
         self.call_count += 1
+        self.system_prompts.append(system_prompt)
+        self.user_prompts.append(user_prompt)
         if self.error is not None:
             raise self.error
         return LlmResult(
@@ -77,6 +85,7 @@ def make_service(count: int, llm: FakeLlm | None = None):
             messages=FakeMessages(count),
             summaries=summaries,
             llm=selected_llm,
+            copy=BotCopy.load(Path("content/bot_copy.ru.toml")),
             timezone_name="Europe/Moscow",
             automatic_min_messages=15,
             on_demand_min_messages=5,
@@ -181,3 +190,49 @@ def test_generated_summary_fits_single_telegram_message() -> None:
 
     assert len(result.text) <= 3900
     assert result.text.endswith("…")
+
+
+def test_model_summary_uses_copy_template_and_escapes_dynamic_html() -> None:
+    llm = FakeLlm(
+        '{"headline":"A < B & C","topics":[{"title":"<релиз>","details":"готово & принято"}]}'
+    )
+    service, _, _ = make_service(5, llm)
+
+    result = service.generate(-1001, SummaryKind.ON_DEMAND, 42, NOW)
+
+    assert result.text == (
+        "<b>📝 Краткая сводка за сегодня</b>\n\n"
+        "A &lt; B &amp; C\n\n"
+        "• &lt;релиз&gt;\nготово &amp; принято"
+    )
+    assert llm.system_prompts[0] == service.copy.value("prompts", "system")
+
+
+def test_fallback_escapes_names_and_message_fragments() -> None:
+    llm = FakeLlm()
+    llm.error = TimeoutError("timeout")
+    service, _, _ = make_service(5, llm)
+    service.messages.items[1] = replace(
+        service.messages.items[1],
+        full_name="Pavel <admin>",
+    )
+    service.messages.items[-1] = replace(
+        service.messages.items[-1],
+        full_name="Pavel <admin>",
+        text="2 < 3 & это важно",
+    )
+
+    result = service.generate(-1001, SummaryKind.ON_DEMAND, 42, NOW)
+
+    assert result.text.startswith("<b>📝 Краткая сводка за сегодня</b>")
+    assert "Pavel &lt;admin&gt;" in result.text
+    assert "2 &lt; 3 &amp; это важно" in result.text
+
+
+def test_html_truncation_does_not_cut_entity() -> None:
+    text = "<b>title</b>\n\n" + ("&amp;" * 1000)
+
+    result = summaries_module._telegram_safe_html(text)
+
+    assert len(result) <= 3900
+    assert not result.removesuffix("…").endswith(("&", "&a", "&am", "&amp"))

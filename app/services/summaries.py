@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import re
 from collections import Counter
@@ -7,6 +8,7 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Any, Sequence
 from zoneinfo import ZoneInfo
 
+from app.content import BotCopy
 from app.domain.models import (
     GeneratedSummary,
     StoredMessage,
@@ -18,12 +20,6 @@ from app.domain.ports import LlmGateway, MessageRepository, SummaryRepository
 
 TRANSCRIPT_CHARACTER_LIMIT = 18_000
 TELEGRAM_SUMMARY_LIMIT = 3_900
-SYSTEM_PROMPT = (
-    "Ты редактор краткой сводки Telegram-группы. Пиши по-русски, строго по фактам "
-    "из переписки, без домыслов и персональных оценок. Верни только JSON: "
-    '{"headline":"главный итог дня","topics":[{"title":"тема","details":"конкретные итоги"}]}. '
-    "Не более четырех тем."
-)
 
 
 class SummaryService:
@@ -33,6 +29,7 @@ class SummaryService:
         messages: MessageRepository,
         summaries: SummaryRepository,
         llm: LlmGateway,
+        copy: BotCopy,
         timezone_name: str,
         automatic_min_messages: int,
         on_demand_min_messages: int,
@@ -40,6 +37,7 @@ class SummaryService:
         self.messages = messages
         self.summaries = summaries
         self.llm = llm
+        self.copy = copy
         self.timezone = ZoneInfo(timezone_name)
         self.automatic_min_messages = automatic_min_messages
         self.on_demand_min_messages = on_demand_min_messages
@@ -118,26 +116,30 @@ class SummaryService:
         model = None
         fallback_type = None
         try:
+            system_prompt = self.copy.value("prompts", "system")
             llm_result = self.llm.generate_summary(
-                SYSTEM_PROMPT,
-                _build_user_prompt(messages),
+                system_prompt,
+                _build_user_prompt(messages, self.copy),
             )
             payload = _parse_payload(llm_result.content)
             if payload is None:
                 repair = self.llm.generate_summary(
-                    SYSTEM_PROMPT,
-                    "Исправь ответ в требуемый JSON без добавления фактов:\n"
-                    + llm_result.content[:6000],
+                    system_prompt,
+                    self.copy.render(
+                        "prompts",
+                        "repair",
+                        invalid_model_response=llm_result.content[:6000],
+                    ),
                 )
                 payload = _parse_payload(repair.content)
                 llm_result = repair
             if payload is None:
                 raise ValueError("unusable summary JSON")
-            text = _render_payload(payload)
+            text = _render_payload(payload, self.copy)
             provider = llm_result.provider
             model = llm_result.model
         except Exception:
-            text = _heuristic_summary(messages)
+            text = _heuristic_summary(messages, self.copy)
             fallback_type = "heuristic"
 
         summary = GeneratedSummary(
@@ -156,15 +158,21 @@ class SummaryService:
         return summary
 
 
-def _build_user_prompt(messages: Sequence[StoredMessage]) -> str:
+def _build_user_prompt(messages: Sequence[StoredMessage], copy: BotCopy) -> str:
     lines = [
-        f"[{message.sent_at.isoformat()}] {message.full_name}: {message.text}"
+        copy.render(
+            "prompts",
+            "transcript_line",
+            iso_datetime=message.sent_at.isoformat(),
+            participant_name=message.full_name,
+            message_text=message.text,
+        )
         for message in messages
     ]
     transcript = "\n".join(lines)
     if len(transcript) > TRANSCRIPT_CHARACTER_LIMIT:
         transcript = transcript[-TRANSCRIPT_CHARACTER_LIMIT:]
-    return "Подготовь сводку сегодняшней переписки:\n\n" + transcript
+    return copy.render("prompts", "user", transcript=transcript)
 
 
 def _parse_payload(raw: str) -> dict[str, Any] | None:
@@ -195,30 +203,51 @@ def _parse_payload(raw: str) -> dict[str, Any] | None:
     return {"headline": headline[:500], "topics": normalized_topics}
 
 
-def _render_payload(payload: dict[str, Any]) -> str:
-    lines = ["📝 Сводка за сегодня", "", str(payload["headline"])]
-    for topic in payload["topics"]:
-        lines.extend(("", f"• {topic['title']}", topic["details"]))
-    return _telegram_safe_text("\n".join(lines))
+def _escaped(value: object) -> str:
+    return html.escape(str(value), quote=False)
 
 
-def _heuristic_summary(messages: Sequence[StoredMessage]) -> str:
-    participants = Counter(message.full_name for message in messages)
-    top_people = ", ".join(name for name, _ in participants.most_common(3))
-    recent = [message.text.strip() for message in messages[-3:] if message.text.strip()]
-    lines = [
-        "📝 Сводка за сегодня",
-        "",
-        f"Сообщений за сегодня: {len(messages)}.",
-        f"Активные участники: {top_people or 'не определены'}.",
+def _render_payload(payload: dict[str, Any], copy: BotCopy) -> str:
+    topics = [
+        copy.render(
+            "summary",
+            "topic",
+            topic_title=_escaped(topic["title"]),
+            topic_details=_escaped(topic["details"]),
+        )
+        for topic in payload["topics"]
     ]
-    if recent:
-        lines.append("Последние обсуждавшиеся вопросы:")
-        lines.extend(f"• {text[:240]}" for text in recent)
-    return _telegram_safe_text("\n".join(lines))
+    text = copy.render(
+        "summary",
+        "document",
+        headline=_escaped(payload["headline"]),
+        topics_block=copy.value("summary", "topics_separator").join(topics),
+    ).rstrip()
+    return _telegram_safe_html(text)
 
 
-def _telegram_safe_text(text: str) -> str:
+def _heuristic_summary(messages: Sequence[StoredMessage], copy: BotCopy) -> str:
+    participants = Counter(message.full_name for message in messages)
+    top_people = ", ".join(_escaped(name) for name, _ in participants.most_common(3))
+    recent = [message.text.strip() for message in messages[-3:] if message.text.strip()]
+    recent_messages = [
+        copy.render("fallback", "message_item", message_text=_escaped(text[:240]))
+        for text in recent
+    ]
+    text = copy.render(
+        "fallback",
+        "document",
+        message_count=_escaped(len(messages)),
+        participants=top_people or copy.value("fallback", "participants_unknown"),
+        recent_messages=copy.value("fallback", "messages_separator").join(recent_messages),
+    ).rstrip()
+    return _telegram_safe_html(text)
+
+
+def _telegram_safe_html(text: str) -> str:
     if len(text) <= TELEGRAM_SUMMARY_LIMIT:
         return text
-    return text[: TELEGRAM_SUMMARY_LIMIT - 1].rstrip() + "…"
+    cut = text[: TELEGRAM_SUMMARY_LIMIT - 1].rstrip()
+    if cut.rfind("&") > cut.rfind(";"):
+        cut = cut[: cut.rfind("&")].rstrip()
+    return cut + "…"
