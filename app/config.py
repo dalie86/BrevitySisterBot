@@ -15,8 +15,8 @@ class Settings:
     db_name: str
     db_user: str
     db_password: str
-    groq_api_key: str
-    groq_model: str = "qwen/qwen3.6-27b"
+    deepseek_api_key: str
+    deepseek_model: str = "deepseek-v4-flash"
     timezone: str = "Europe/Moscow"
     owner_chat_id: int | None = None
     automatic_min_messages: int = 15
@@ -35,7 +35,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         "DB_NAME",
         "DB_USER",
         "DB_PASSWORD",
-        "GROQ_API_KEY",
+        "DEEPSEEK_API_KEY",
     )
     missing = [name for name in required if not values.get(name, "").strip()]
     if missing:
@@ -54,8 +54,8 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         db_name=values["DB_NAME"].strip(),
         db_user=values["DB_USER"].strip(),
         db_password=values["DB_PASSWORD"],
-        groq_api_key=values["GROQ_API_KEY"].strip(),
-        groq_model=values.get("GROQ_MODEL", "qwen/qwen3.6-27b").strip(),
+        deepseek_api_key=values["DEEPSEEK_API_KEY"].strip(),
+        deepseek_model=values.get("DEEPSEEK_MODEL", "deepseek-v4-flash").strip(),
         timezone=values.get("BOT_TIMEZONE", "Europe/Moscow").strip(),
         owner_chat_id=int(values["OWNER_CHAT_ID"]) if values.get("OWNER_CHAT_ID") else None,
         automatic_min_messages=int(values.get("AUTOMATIC_MIN_MESSAGES", "15")),

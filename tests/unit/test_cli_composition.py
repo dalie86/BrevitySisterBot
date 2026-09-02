@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from app.config import load_settings
+from app.integrations.deepseek import DeepSeekClient
 from app.jobs import cli
 
 
@@ -61,7 +62,8 @@ def test_recover_composes_one_catalog_and_dispatches_all_handlers_once(monkeypat
             "DB_NAME": "brevity",
             "DB_USER": "brevity",
             "DB_PASSWORD": "password",
-            "GROQ_API_KEY": "groq",
+            "DEEPSEEK_API_KEY": "deepseek",
+            "DEEPSEEK_MODEL": "deepseek-v4-flash",
         }
     )
 
@@ -75,6 +77,7 @@ def test_recover_composes_one_catalog_and_dispatches_all_handlers_once(monkeypat
     assert result == 1
     assert load_calls == [cli.PROJECT_ROOT / "content" / "bot_copy.ru.toml"]
     assert summary_kwargs["copy"] is copy
+    assert isinstance(summary_kwargs["llm"], DeepSeekClient)
     assert handler_kwargs["group"]["copy"] is copy
     assert handler_kwargs["private"]["copy"] is copy
     assert handler_kwargs["group"]["telegram_bot_username"] == "BrevitySisterBot"

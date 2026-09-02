@@ -2,6 +2,7 @@ import importlib
 import sys
 
 from app.content import BotCopy
+from app.integrations.deepseek import DeepSeekClient
 from app.repositories.mysql import MySqlChatShareRequestRepository
 from app.services.access import AccessService
 from app.services.membership_updates import MembershipUpdateHandler
@@ -17,7 +18,8 @@ def _import_production(monkeypatch):
         "DB_NAME": "brevity",
         "DB_USER": "brevity",
         "DB_PASSWORD": "password",
-        "GROQ_API_KEY": "groq",
+        "DEEPSEEK_API_KEY": "deepseek",
+        "DEEPSEEK_MODEL": "deepseek-v4-flash",
     }
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
@@ -30,6 +32,7 @@ def test_production_composition_loads_one_catalog_and_all_handlers(monkeypatch) 
 
     assert isinstance(production.copy, BotCopy)
     assert production.summaries.copy is production.copy
+    assert isinstance(production.summaries.llm, DeepSeekClient)
     assert production.group_handler.copy is production.copy
     assert production.private_summary_handler.copy is production.copy
     assert isinstance(production.share_requests, MySqlChatShareRequestRepository)

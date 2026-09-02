@@ -14,11 +14,12 @@ def test_load_settings_uses_production_defaults() -> None:
             "DB_NAME": "brevity",
             "DB_USER": "brevity",
             "DB_PASSWORD": "password",
-            "GROQ_API_KEY": "groq",
+            "DEEPSEEK_API_KEY": "deepseek",
+            "DEEPSEEK_MODEL": "deepseek-v4-flash",
         }
     )
 
-    assert settings.groq_model == "qwen/qwen3.6-27b"
+    assert settings.deepseek_model == "deepseek-v4-flash"
     assert settings.telegram_bot_username == "BrevitySisterBot"
     assert settings.webhook_url == "https://brevity.prosto-kosmos.ru/telegram/webhook"
     assert settings.timezone == "Europe/Moscow"
@@ -35,7 +36,8 @@ def test_load_settings_reports_all_missing_required_values() -> None:
     assert "TELEGRAM_BOT_TOKEN" in str(error.value)
     assert "TELEGRAM_BOT_USERNAME" in str(error.value)
     assert "DB_NAME" in str(error.value)
-    assert "GROQ_API_KEY" in str(error.value)
+    assert "DEEPSEEK_API_KEY" in str(error.value)
+    assert "GROQ" + "_API_KEY" not in str(error.value)
 
 
 def test_load_settings_parses_owner_chat_id() -> None:
@@ -49,7 +51,8 @@ def test_load_settings_parses_owner_chat_id() -> None:
             "DB_NAME": "brevity",
             "DB_USER": "brevity",
             "DB_PASSWORD": "password",
-            "GROQ_API_KEY": "groq",
+            "DEEPSEEK_API_KEY": "deepseek",
+            "DEEPSEEK_MODEL": "deepseek-v4-flash",
             "OWNER_CHAT_ID": "-100123",
         }
     )
@@ -67,7 +70,8 @@ def test_load_settings_rejects_empty_bot_username_after_optional_at_sign() -> No
         "DB_NAME": "brevity",
         "DB_USER": "brevity",
         "DB_PASSWORD": "password",
-        "GROQ_API_KEY": "groq",
+        "DEEPSEEK_API_KEY": "deepseek",
+        "DEEPSEEK_MODEL": "deepseek-v4-flash",
     }
 
     with pytest.raises(RuntimeError, match="TELEGRAM_BOT_USERNAME"):

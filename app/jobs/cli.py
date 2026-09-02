@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 from app.config import Settings, load_settings
 from app.content import BotCopy
-from app.integrations.groq import GroqClient
+from app.integrations.deepseek import DeepSeekClient
 from app.integrations.telegram import TelegramClient, parse_update
 from app.repositories.mysql import (
     MySqlDatabase,
@@ -99,7 +99,7 @@ def _run_command(
     summaries = SummaryService(
         messages=messages,
         summaries=summary_repository,
-        llm=GroqClient(settings.groq_api_key, settings.groq_model),
+        llm=DeepSeekClient(settings.deepseek_api_key, settings.deepseek_model),
         copy=copy,
         timezone_name=settings.timezone,
         automatic_min_messages=settings.automatic_min_messages,

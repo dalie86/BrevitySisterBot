@@ -69,8 +69,8 @@ class FakeLlm:
             raise self.error
         return LlmResult(
             content=self.content,
-            provider="groq",
-            model="qwen/qwen3.6-27b",
+            provider="deepseek",
+            model="deepseek-v4-flash",
             duration_ms=25,
         )
 
@@ -104,7 +104,7 @@ def test_scheduled_summary_requires_15_messages() -> None:
     assert llm.call_count == 0
 
 
-def test_on_demand_uses_fallback_after_groq_error() -> None:
+def test_on_demand_uses_fallback_after_deepseek_error() -> None:
     llm = FakeLlm()
     llm.error = TimeoutError("timeout")
     service, _, summaries = make_service(5, llm)
@@ -136,7 +136,7 @@ def test_invalid_json_gets_one_repair_attempt_then_fallback() -> None:
             content = (
                 "not-json" if self.call_count == 1 else '{"headline":"Исправлено","topics":[]}'
             )
-            return LlmResult(content, "groq", "model", 10)
+            return LlmResult(content, "deepseek", "model", 10)
 
     llm = RepairingLlm()
     service, _, _ = make_service(5, llm)
@@ -266,8 +266,10 @@ def test_repair_uses_catalog_template_and_caps_invalid_response_at_6000() -> Non
             self.system_prompts.append(system_prompt)
             self.user_prompts.append(user_prompt)
             if len(self.user_prompts) == 1:
-                return LlmResult(invalid, "groq", "model", 10)
-            return LlmResult('{"headline":"fixed","topics":[]}', "groq", "model", 10)
+                return LlmResult(invalid, "deepseek", "model", 10)
+            return LlmResult(
+                '{"headline":"fixed","topics":[]}', "deepseek", "model", 10
+            )
 
     llm = RepairLlm()
     service, _, _ = make_service(5, llm)

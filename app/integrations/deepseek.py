@@ -9,7 +9,7 @@ from typing import Any
 from app.domain.models import LlmResult
 
 
-class GroqApiError(RuntimeError):
+class DeepSeekApiError(RuntimeError):
     def __init__(
         self,
         message: str,
@@ -22,10 +22,15 @@ class GroqApiError(RuntimeError):
         self.retry_after_seconds = retry_after_seconds
 
 
-class GroqClient:
-    endpoint = "https://api.groq.com/openai/v1/chat/completions"
+class DeepSeekClient:
+    endpoint = "https://api.deepseek.com/chat/completions"
 
-    def __init__(self, api_key: str, model: str, timeout_seconds: float = 45.0) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "deepseek-v4-flash",
+        timeout_seconds: float = 90.0,
+    ) -> None:
         self.api_key = api_key
         self.model = model
         self.timeout_seconds = timeout_seconds
@@ -37,8 +42,11 @@ class GroqClient:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            "temperature": 0.3,
+            "thinking": {"type": "disabled"},
+            "temperature": 0.2,
+            "max_tokens": 1200,
             "response_format": {"type": "json_object"},
+            "stream": False,
         }
         request = urllib.request.Request(
             self.endpoint,
@@ -53,17 +61,20 @@ class GroqClient:
         started = time.monotonic()
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                body = json.loads(response.read().decode("utf-8"))
+                raw_body = response.read().decode("utf-8").strip()
+                body = json.loads(raw_body)
         except urllib.error.HTTPError as exc:
-            raise GroqApiError(
-                _http_error_message(exc),
+            raise DeepSeekApiError(
+                _http_error_message(exc, self.api_key),
                 status_code=exc.code,
                 retry_after_seconds=_retry_after_seconds(exc.headers),
             ) from None
         except (urllib.error.URLError, TimeoutError) as exc:
-            raise GroqApiError(f"Groq request failed: {type(exc).__name__}") from None
+            raise DeepSeekApiError(
+                f"DeepSeek request failed: {type(exc).__name__}"
+            ) from None
         except (json.JSONDecodeError, UnicodeDecodeError):
-            raise GroqApiError("Groq returned malformed JSON") from None
+            raise DeepSeekApiError("DeepSeek returned malformed JSON") from None
 
         content = _extract_content(body)
         usage = body.get("usage") if isinstance(body, dict) else {}
@@ -71,8 +82,8 @@ class GroqClient:
             usage = {}
         return LlmResult(
             content=content,
-            provider="groq",
-            model=self.model,
+            provider="deepseek",
+            model=_response_model(body, self.model),
             duration_ms=round((time.monotonic() - started) * 1000),
             input_tokens=_optional_int(usage.get("prompt_tokens")),
             output_tokens=_optional_int(usage.get("completion_tokens")),
@@ -83,10 +94,18 @@ def _extract_content(body: Any) -> str:
     try:
         content = body["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
-        raise GroqApiError("Groq response has no message content") from None
+        raise DeepSeekApiError("DeepSeek response has no message content") from None
     if not isinstance(content, str) or not content.strip():
-        raise GroqApiError("Groq response has empty message content")
+        raise DeepSeekApiError("DeepSeek response has empty message content")
     return content.strip()
+
+
+def _response_model(body: Any, configured_model: str) -> str:
+    if isinstance(body, dict):
+        model = body.get("model")
+        if isinstance(model, str) and model:
+            return model
+    return configured_model
 
 
 def _retry_after_seconds(headers: Any) -> int | None:
@@ -98,13 +117,14 @@ def _retry_after_seconds(headers: Any) -> int | None:
         return None
 
 
-def _http_error_message(error: urllib.error.HTTPError) -> str:
+def _http_error_message(error: urllib.error.HTTPError, api_key: str) -> str:
     try:
-        payload = json.loads(error.read().decode("utf-8"))
+        payload = json.loads(error.read().decode("utf-8").strip())
         message = payload.get("error", {}).get("message")
     except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
         message = None
-    return str(message or f"Groq HTTP error {error.code}")
+    safe_message = str(message or f"DeepSeek HTTP error {error.code}")
+    return safe_message.replace(api_key, "[redacted]") if api_key else safe_message
 
 
 def _optional_int(value: Any) -> int | None:
