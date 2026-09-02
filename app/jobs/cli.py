@@ -25,6 +25,7 @@ from app.repositories.mysql import (
     MySqlTelegramEffectRepository,
     MySqlTrackedChatRepository,
     MySqlUpdateRepository,
+    MySqlUsageRepository,
 )
 from app.jobs.audit import OperationalAuditService
 from app.services.access import AccessService
@@ -34,9 +35,20 @@ from app.services.membership_updates import MembershipUpdateHandler
 from app.services.on_demand import OnDemandSummaryHandler, OnDemandSummaryService
 from app.services.summaries import SummaryService
 from app.services.telegram_effects import DurableTelegramGateway, telegram_update_scope
+from app.services.usage_reports import UsageReportService
 from app.services.updates import UpdateService
 
-COMMANDS = {"recover", "prepare", "publish", "archive", "cleanup", "purge", "audit"}
+COMMANDS = {
+    "recover",
+    "prepare",
+    "publish",
+    "archive",
+    "cleanup",
+    "purge",
+    "audit",
+    "usage",
+    "usage-report",
+}
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -86,7 +98,35 @@ def _run_command(
     now: datetime,
     *,
     dry_run: bool = False,
-) -> JobReport | int | dict[str, int | bool]:
+) -> JobReport | int | dict:
+    if command in {"usage", "usage-report"}:
+        if command == "usage-report" and settings.owner_chat_id is None:
+            raise RuntimeError("OWNER_CHAT_ID is required for usage-report")
+        balance_client = DeepSeekClient(
+            settings.deepseek_api_key, settings.deepseek_model
+        )
+        usage = UsageReportService(
+            MySqlUsageRepository(database.connect), balance_client
+        )
+        if command == "usage":
+            return usage.inspect(now)
+
+        frozen = usage.prepare_weekly(now)
+        raw_telegram = TelegramClient(settings.telegram_bot_token)
+        telegram = DurableTelegramGateway(
+            raw=raw_telegram,
+            effects=MySqlTelegramEffectRepository(database.connect),
+            now=lambda: datetime.now(timezone.utc),
+        )
+        weekly_update_id = -int(frozen.week_start.strftime("%Y%m%d"))
+        with telegram_update_scope(weekly_update_id):
+            telegram.send_message(settings.owner_chat_id, frozen.report_text)
+        return {
+            "command": "usage-report",
+            "status": "sent",
+            "week_start": frozen.week_start.isoformat(),
+        }
+
     copy = BotCopy.load(PROJECT_ROOT / "content" / "bot_copy.ru.toml")
     bot_user_id = int(settings.telegram_bot_token.split(":", 1)[0])
     raw_telegram = TelegramClient(settings.telegram_bot_token)

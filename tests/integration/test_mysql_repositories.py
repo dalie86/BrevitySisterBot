@@ -1,11 +1,13 @@
 import json
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from unittest.mock import patch
 
 import pymysql
 import pytest
 
 from app.domain.models import (
+    BalanceSnapshot,
     GeneratedSummary,
     StoredMessage,
     SummaryKind,
@@ -16,6 +18,7 @@ from app.repositories.mysql import (
     MySqlMemberRepository,
     MySqlMessageRepository,
     MySqlSummaryRepository,
+    MySqlUsageRepository,
     MySqlTelegramEffectRepository,
     MySqlTrackedChatRepository,
     MySqlUpdateRepository,
@@ -110,6 +113,121 @@ def test_summary_save_records_all_usage_fields_in_insert_and_upsert() -> None:
     assert params[10:18] == (40, 312, 36, 999, 72, 240, 2, 70)
     assert connection.commits == 1
     assert connection.closed is True
+
+
+def test_usage_aggregate_sums_provider_metrics_with_null_safe_sql() -> None:
+    connection = RecordingConnection(
+        fetchone_result={
+            "llm_call_count": 12,
+            "repair_call_count": 2,
+            "cache_hit_input_tokens": 1200,
+            "cache_miss_input_tokens": 3400,
+            "output_tokens": 560,
+            "estimated_cost_microusd": 1_250_000,
+        }
+    )
+    repository = MySqlUsageRepository(lambda: connection)
+    start = datetime(2026, 8, 30, 21, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 6, 21, 0, tzinfo=timezone.utc)
+
+    totals = repository.aggregate("deepseek", start, end)
+
+    sql, params = connection.cursor_instance.executions[0]
+    normalized = " ".join(sql.split())
+    assert "SUM(llm_call_count)" in normalized
+    assert "SUM(cache_hit_input_tokens)" in normalized
+    assert "SUM(cache_miss_input_tokens)" in normalized
+    assert "SUM(estimated_cost_microusd)" in normalized
+    assert "COALESCE" in normalized
+    assert "provider = %s" in normalized
+    assert "prepared_at >= %s" in normalized
+    assert "prepared_at < %s" in normalized
+    assert params == ("deepseek", start.replace(tzinfo=None), end.replace(tzinfo=None))
+    assert totals.llm_call_count == 12
+    assert totals.repair_call_count == 2
+    assert totals.cache_hit_input_tokens == 1200
+    assert totals.cache_miss_input_tokens == 3400
+    assert totals.output_tokens == 560
+    assert totals.estimated_cost_microusd == 1_250_000
+
+
+def test_previous_balance_snapshot_is_strictly_before_requested_week_and_available() -> None:
+    captured_at = datetime(2026, 8, 30, 18, 30)
+    connection = RecordingConnection(
+        fetchone_result={
+            "provider": "deepseek",
+            "currency": "CNY",
+            "total_balance": Decimal("50.000000"),
+            "granted_balance": Decimal("0.000000"),
+            "topped_up_balance": Decimal("50.000000"),
+            "is_available": 1,
+            "report_week_start": datetime(2026, 8, 23, 21, 0),
+            "report_text": "old report",
+            "captured_at": captured_at,
+        }
+    )
+    repository = MySqlUsageRepository(lambda: connection)
+    week_start = datetime(2026, 8, 30, 21, 0, tzinfo=timezone.utc)
+
+    snapshot = repository.previous_snapshot("deepseek", "CNY", week_start)
+
+    assert snapshot is not None
+    assert snapshot.total_balance == Decimal("50.000000")
+    sql, params = connection.cursor_instance.executions[0]
+    assert "report_week_start < %s" in sql
+    assert "is_available = 1" in sql
+    assert "ORDER BY report_week_start DESC" in sql
+    assert params == ("deepseek", "CNY", week_start.replace(tzinfo=None))
+    assert snapshot.captured_at.tzinfo == timezone.utc
+    assert snapshot.is_available is True
+    assert snapshot.topped_up_balance == Decimal("50.000000")
+
+
+def test_get_or_create_snapshot_uses_insert_ignore_then_returns_frozen_text() -> None:
+    existing = {
+        "provider": "deepseek",
+        "currency": "CNY",
+        "total_balance": Decimal("49.000000"),
+        "granted_balance": Decimal("0.000000"),
+        "topped_up_balance": Decimal("49.000000"),
+        "is_available": 1,
+        "report_week_start": datetime(2026, 8, 30, 21, 0),
+        "report_text": "first frozen report",
+        "captured_at": datetime(2026, 9, 6, 18, 30),
+    }
+    connection = RecordingConnection(fetchone_result=existing)
+    repository = MySqlUsageRepository(lambda: connection)
+
+    snapshot = repository.get_or_create_snapshot(
+        BalanceSnapshot(
+            provider="deepseek",
+            currency="CNY",
+            total_balance=Decimal("48.000000"),
+            granted_balance=Decimal("0.000000"),
+            topped_up_balance=Decimal("48.000000"),
+            is_available=True,
+            report_week_start=datetime(2026, 8, 30, 21, 0, tzinfo=timezone.utc),
+            report_text="changed retry report",
+            captured_at=datetime(2026, 9, 6, 18, 35, tzinfo=timezone.utc),
+        )
+    )
+
+    assert isinstance(snapshot, BalanceSnapshot)
+    assert snapshot.total_balance == Decimal("49.000000")
+    assert snapshot.report_text == "first frozen report"
+    assert len(connection.cursor_instance.executions) == 2
+    insert_sql, insert_params = connection.cursor_instance.executions[0]
+    select_sql, select_params = connection.cursor_instance.executions[1]
+    assert "INSERT IGNORE INTO llm_balance_snapshots" in insert_sql
+    assert "UPDATE" not in insert_sql.upper()
+    assert insert_params[7] == "changed retry report"
+    assert "SELECT" in select_sql
+    assert select_params == (
+        "deepseek",
+        "CNY",
+        datetime(2026, 8, 30, 21, 0),
+    )
+    assert connection.commits == 1
 
 
 def test_enqueue_serializes_payload_and_uses_duplicate_safe_insert() -> None:

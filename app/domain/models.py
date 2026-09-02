@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from typing import Iterable
 
@@ -90,6 +91,44 @@ class LlmResult:
     cache_hit_input_tokens: int | None = None
     cache_miss_input_tokens: int | None = None
     estimated_cost_microusd: int = 0
+
+
+@dataclass(frozen=True)
+class LlmBalance:
+    currency: str
+    total_balance: Decimal
+    granted_balance: Decimal
+    topped_up_balance: Decimal
+
+
+@dataclass(frozen=True)
+class UsageTotals:
+    llm_call_count: int = 0
+    repair_call_count: int = 0
+    cache_hit_input_tokens: int = 0
+    cache_miss_input_tokens: int = 0
+    output_tokens: int = 0
+    estimated_cost_microusd: int = 0
+
+
+@dataclass(frozen=True)
+class BalanceSnapshot:
+    provider: str
+    currency: str
+    total_balance: Decimal
+    granted_balance: Decimal
+    topped_up_balance: Decimal
+    is_available: bool
+    report_week_start: datetime
+    report_text: str
+    captured_at: datetime
+
+
+@dataclass(frozen=True)
+class FrozenUsageReport:
+    week_start: datetime
+    report_text: str
+    balance: BalanceSnapshot | None
 
 
 @dataclass(frozen=True)

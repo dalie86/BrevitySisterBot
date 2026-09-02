@@ -1,12 +1,165 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
+
+import pytest
 
 from app.config import load_settings
+from app.domain.models import BalanceSnapshot, FrozenUsageReport
 from app.integrations.deepseek import DeepSeekClient
 from app.jobs import cli
 
 
 NOW = datetime(2026, 7, 16, 18, 15, tzinfo=timezone.utc)
+
+
+def make_settings(owner_chat_id=None):
+    values = {
+        "TELEGRAM_BOT_TOKEN": "777:token",
+        "TELEGRAM_BOT_USERNAME": "@BrevitySisterBot",
+        "WEBHOOK_SECRET_TOKEN": "secret",
+        "WEBHOOK_URL": "https://example.test/telegram/webhook",
+        "DB_HOST": "localhost",
+        "DB_NAME": "brevity",
+        "DB_USER": "brevity",
+        "DB_PASSWORD": "password",
+        "DEEPSEEK_API_KEY": "deepseek",
+        "DEEPSEEK_MODEL": "deepseek-v4-flash",
+    }
+    if owner_chat_id is not None:
+        values["OWNER_CHAT_ID"] = str(owner_chat_id)
+    return load_settings(values)
+
+
+def test_cli_exposes_usage_commands() -> None:
+    assert {"usage", "usage-report"} <= cli.COMMANDS
+
+
+def test_usage_returns_local_and_balance_data_without_constructing_telegram(
+    monkeypatch,
+) -> None:
+    class FakeService:
+        def inspect(self, now):
+            assert now == NOW
+            return {"balance_available": False, "week": {"llm_call_count": 3}}
+
+    monkeypatch.setattr(cli, "MySqlUsageRepository", lambda connect: object())
+    monkeypatch.setattr(
+        cli, "UsageReportService", lambda repository, balance_client: FakeService()
+    )
+    monkeypatch.setattr(
+        cli,
+        "TelegramClient",
+        lambda token: (_ for _ in ()).throw(AssertionError("Telegram not allowed")),
+    )
+    monkeypatch.setattr(
+        cli.BotCopy,
+        "load",
+        lambda path: (_ for _ in ()).throw(AssertionError("unrelated composition")),
+    )
+
+    result = cli._run_command(
+        "usage", make_settings(), SimpleNamespace(connect=lambda: None), NOW
+    )
+
+    assert result == {
+        "balance_available": False,
+        "week": {"llm_call_count": 3},
+    }
+
+
+def test_usage_report_requires_owner_chat_id_before_telegram_send(monkeypatch) -> None:
+    monkeypatch.setattr(
+        cli,
+        "TelegramClient",
+        lambda token: (_ for _ in ()).throw(AssertionError("must fail before Telegram")),
+    )
+
+    with pytest.raises(RuntimeError, match="OWNER_CHAT_ID"):
+        cli._run_command(
+            "usage-report",
+            make_settings(),
+            SimpleNamespace(connect=lambda: None),
+            NOW,
+        )
+
+
+def test_usage_report_retries_use_stable_weekly_update_id_and_send_once(
+    monkeypatch,
+) -> None:
+    week_start = datetime(2026, 8, 31, 0, 0, tzinfo=ZoneInfo("Europe/Moscow"))
+    balance = BalanceSnapshot(
+        provider="deepseek",
+        currency="CNY",
+        total_balance=Decimal("49"),
+        granted_balance=Decimal("0"),
+        topped_up_balance=Decimal("49"),
+        is_available=True,
+        report_week_start=week_start,
+        report_text="frozen weekly report",
+        captured_at=NOW,
+    )
+    frozen = FrozenUsageReport(
+        week_start=week_start,
+        report_text="frozen weekly report",
+        balance=balance,
+    )
+
+    class FakeService:
+        def prepare_weekly(self, now):
+            return frozen
+
+    class FakeEffects:
+        def __init__(self):
+            self.records = {}
+            self.update_ids = []
+
+        def begin(self, effect_key, update_id, method, payload_hash, now):
+            self.update_ids.append(update_id)
+            if effect_key in self.records:
+                return self.records[effect_key]
+            self.records[effect_key] = ("sending", None)
+            return None
+
+        def mark_sent(self, effect_key, message_id, now):
+            self.records[effect_key] = ("sent", message_id)
+
+        def mark_review_required(self, effect_key, error, now):
+            self.records[effect_key] = ("review_required", None)
+
+    class FakeTelegram:
+        def __init__(self):
+            self.sent = []
+
+        def send_message(self, chat_id, text, reply_markup=None, parse_mode=None):
+            self.sent.append((chat_id, text))
+            return 77
+
+    effects = FakeEffects()
+    telegram = FakeTelegram()
+    monkeypatch.setattr(cli, "MySqlUsageRepository", lambda connect: object())
+    monkeypatch.setattr(
+        cli, "UsageReportService", lambda repository, balance_client: FakeService()
+    )
+    monkeypatch.setattr(cli, "MySqlTelegramEffectRepository", lambda connect: effects)
+    monkeypatch.setattr(cli, "TelegramClient", lambda token: telegram)
+
+    for _ in range(2):
+        result = cli._run_command(
+            "usage-report",
+            make_settings(12345),
+            SimpleNamespace(connect=lambda: None),
+            NOW,
+        )
+        assert result == {
+            "command": "usage-report",
+            "status": "sent",
+            "week_start": week_start.isoformat(),
+        }
+
+    assert effects.update_ids == [-20260831, -20260831]
+    assert telegram.sent == [(12345, "frozen weekly report")]
 
 
 def test_recover_composes_one_catalog_and_dispatches_all_handlers_once(monkeypatch) -> None:

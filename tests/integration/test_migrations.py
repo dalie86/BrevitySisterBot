@@ -57,12 +57,26 @@ def test_deepseek_usage_migration_is_additive_and_preserves_old_rows() -> None:
     files = migration_files(Path("migrations"))
     sql = files[2].read_text(encoding="utf-8")
 
-    assert _split_sql_statements(sql) == [
+    statements = _split_sql_statements(sql)
+    assert statements[:4] == [
         "ALTER TABLE prepared_summaries ADD COLUMN cache_hit_input_tokens INT NULL",
         "ALTER TABLE prepared_summaries ADD COLUMN cache_miss_input_tokens INT NULL",
         "ALTER TABLE prepared_summaries ADD COLUMN llm_call_count INT NULL",
         "ALTER TABLE prepared_summaries ADD COLUMN estimated_cost_microusd BIGINT NULL",
     ]
+    assert len(statements) == 5
+    snapshot_sql = statements[4]
+    assert snapshot_sql.startswith("CREATE TABLE IF NOT EXISTS llm_balance_snapshots")
+    assert "granted_balance DECIMAL(18, 6) NOT NULL" in snapshot_sql
+    assert "topped_up_balance DECIMAL(18, 6) NOT NULL" in snapshot_sql
+    assert "is_available TINYINT(1) NOT NULL" in snapshot_sql
+    assert "captured_at DATETIME(6) NOT NULL" in snapshot_sql
+    assert "report_text TEXT NOT NULL" in snapshot_sql
+    assert (
+        "UNIQUE KEY uq_llm_balance_report_week "
+        "(provider, currency, report_week_start)"
+    ) in snapshot_sql
+    assert "CHARSET=utf8mb4" in snapshot_sql
     assert "UPDATE " not in sql.upper()
     assert "DELETE " not in sql.upper()
 
@@ -192,7 +206,21 @@ def test_migration_003_restarts_and_records_only_after_verification(
                     ("prepared_summaries", "cache_miss_input_tokens"): "YES",
                     ("prepared_summaries", "llm_call_count"): "YES",
                     ("prepared_summaries", "estimated_cost_microusd"): "YES",
-                }
+                    ("llm_balance_snapshots", "snapshot_id"): "NO",
+                    ("llm_balance_snapshots", "provider"): "NO",
+                    ("llm_balance_snapshots", "currency"): "NO",
+                    ("llm_balance_snapshots", "total_balance"): "NO",
+                    ("llm_balance_snapshots", "report_week_start"): "NO",
+                    ("llm_balance_snapshots", "report_text"): "NO",
+                    ("llm_balance_snapshots", "granted_balance"): "NO",
+                    ("llm_balance_snapshots", "topped_up_balance"): "NO",
+                    ("llm_balance_snapshots", "is_available"): "NO",
+                    ("llm_balance_snapshots", "captured_at"): "NO",
+                },
+                {
+                    ("llm_balance_snapshots", "PRIMARY"): 0,
+                    ("llm_balance_snapshots", "uq_llm_balance_report_week"): 0,
+                },
             )
 
         def record_migration(self, filename, checksum):
@@ -275,7 +303,7 @@ def test_migration_002_schema_verification_rejects_missing_postcondition() -> No
 
 def test_migration_003_schema_verification_rejects_missing_postcondition() -> None:
     with pytest.raises(RuntimeError, match="cache_hit_input_tokens"):
-        _verify_migration_003_schema({})
+        _verify_migration_003_schema({}, {})
 
 
 def test_migration_003_schema_verification_accepts_all_nullable_columns() -> None:
@@ -285,8 +313,44 @@ def test_migration_003_schema_verification_accepts_all_nullable_columns() -> Non
             ("prepared_summaries", "cache_miss_input_tokens"): "YES",
             ("prepared_summaries", "llm_call_count"): "YES",
             ("prepared_summaries", "estimated_cost_microusd"): "YES",
-        }
+            ("llm_balance_snapshots", "snapshot_id"): "NO",
+            ("llm_balance_snapshots", "provider"): "NO",
+            ("llm_balance_snapshots", "currency"): "NO",
+            ("llm_balance_snapshots", "total_balance"): "NO",
+            ("llm_balance_snapshots", "report_week_start"): "NO",
+            ("llm_balance_snapshots", "report_text"): "NO",
+            ("llm_balance_snapshots", "granted_balance"): "NO",
+            ("llm_balance_snapshots", "topped_up_balance"): "NO",
+            ("llm_balance_snapshots", "is_available"): "NO",
+            ("llm_balance_snapshots", "captured_at"): "NO",
+        },
+        {
+            ("llm_balance_snapshots", "PRIMARY"): 0,
+            ("llm_balance_snapshots", "uq_llm_balance_report_week"): 0,
+        },
     )
+
+
+def test_migration_003_schema_verification_rejects_missing_weekly_unique_key() -> None:
+    columns = {
+        ("prepared_summaries", "cache_hit_input_tokens"): "YES",
+        ("prepared_summaries", "cache_miss_input_tokens"): "YES",
+        ("prepared_summaries", "llm_call_count"): "YES",
+        ("prepared_summaries", "estimated_cost_microusd"): "YES",
+        ("llm_balance_snapshots", "snapshot_id"): "NO",
+        ("llm_balance_snapshots", "provider"): "NO",
+        ("llm_balance_snapshots", "currency"): "NO",
+        ("llm_balance_snapshots", "total_balance"): "NO",
+        ("llm_balance_snapshots", "report_week_start"): "NO",
+        ("llm_balance_snapshots", "report_text"): "NO",
+        ("llm_balance_snapshots", "granted_balance"): "NO",
+        ("llm_balance_snapshots", "topped_up_balance"): "NO",
+        ("llm_balance_snapshots", "is_available"): "NO",
+        ("llm_balance_snapshots", "captured_at"): "NO",
+    }
+
+    with pytest.raises(RuntimeError, match="uq_llm_balance_report_week"):
+        _verify_migration_003_schema(columns, {})
 
 
 def test_migration_003_verifies_schema_before_recording_checksum(tmp_path: Path) -> None:

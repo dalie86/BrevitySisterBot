@@ -8,6 +8,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -17,12 +18,14 @@ from pymysql.connections import Connection
 
 from app.config import Settings
 from app.domain.models import (
+    BalanceSnapshot,
     GeneratedSummary,
     QueuedUpdate,
     ReservationResult,
     ReservationState,
     StoredMessage,
     UpdateStatus,
+    UsageTotals,
 )
 
 ConnectionFactory = Callable[[], Any]
@@ -133,7 +136,9 @@ class MySqlDatabase:
                         SELECT table_name, column_name, is_nullable
                         FROM information_schema.columns
                         WHERE table_schema = DATABASE()
-                          AND table_name = 'prepared_summaries'
+                          AND table_name IN (
+                            'prepared_summaries', 'llm_balance_snapshots'
+                          )
                         """
                     )
                     columns = {
@@ -142,7 +147,21 @@ class MySqlDatabase:
                         )
                         for row in cursor.fetchall()
                     }
-                    _verify_migration_003_schema(columns)
+                    cursor.execute(
+                        """
+                        SELECT table_name, index_name, non_unique
+                        FROM information_schema.statistics
+                        WHERE table_schema = DATABASE()
+                          AND table_name = 'llm_balance_snapshots'
+                        """
+                    )
+                    indexes = {
+                        (str(row["table_name"]), str(row["index_name"])): int(
+                            row["non_unique"]
+                        )
+                        for row in cursor.fetchall()
+                    }
+                    _verify_migration_003_schema(columns, indexes)
                     return
                 cursor.execute(
                     """
@@ -987,6 +1006,115 @@ class MySqlSummaryRepository:
             connection.commit()
 
 
+class MySqlUsageRepository:
+    def __init__(self, connection_factory: ConnectionFactory) -> None:
+        self.connection_factory = connection_factory
+
+    def aggregate(
+        self, provider: str, start: datetime, end: datetime
+    ) -> UsageTotals:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    COALESCE(SUM(llm_call_count), 0) AS llm_call_count,
+                    COALESCE(SUM(GREATEST(COALESCE(llm_call_count, 0) - 1, 0)), 0)
+                        AS repair_call_count,
+                    COALESCE(SUM(cache_hit_input_tokens), 0)
+                        AS cache_hit_input_tokens,
+                    COALESCE(SUM(cache_miss_input_tokens), 0)
+                        AS cache_miss_input_tokens,
+                    COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                    COALESCE(SUM(estimated_cost_microusd), 0)
+                        AS estimated_cost_microusd
+                FROM prepared_summaries
+                WHERE provider = %s
+                  AND prepared_at >= %s
+                  AND prepared_at < %s
+                """,
+                (provider, _to_mysql_datetime(start), _to_mysql_datetime(end)),
+            )
+            row = cursor.fetchone() or {}
+            return UsageTotals(
+                llm_call_count=int(row.get("llm_call_count") or 0),
+                repair_call_count=int(row.get("repair_call_count") or 0),
+                cache_hit_input_tokens=int(
+                    row.get("cache_hit_input_tokens") or 0
+                ),
+                cache_miss_input_tokens=int(
+                    row.get("cache_miss_input_tokens") or 0
+                ),
+                output_tokens=int(row.get("output_tokens") or 0),
+                estimated_cost_microusd=int(
+                    row.get("estimated_cost_microusd") or 0
+                ),
+            )
+
+    def previous_snapshot(
+        self, provider: str, currency: str, week_start: datetime
+    ) -> BalanceSnapshot | None:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT provider, currency, total_balance, granted_balance,
+                       topped_up_balance, is_available, report_week_start,
+                       report_text, captured_at
+                FROM llm_balance_snapshots
+                WHERE provider = %s
+                  AND currency = %s
+                  AND is_available = 1
+                  AND report_week_start < %s
+                ORDER BY report_week_start DESC
+                LIMIT 1
+                """,
+                (provider, currency, _to_mysql_datetime(week_start)),
+            )
+            row = cursor.fetchone()
+            return _balance_snapshot_from_row(row) if row else None
+
+    def get_or_create_snapshot(self, snapshot: BalanceSnapshot) -> BalanceSnapshot:
+        with _managed_connection(self.connection_factory) as connection:
+            cursor = connection.cursor()
+            db_week_start = _to_mysql_datetime(snapshot.report_week_start)
+            cursor.execute(
+                """
+                INSERT IGNORE INTO llm_balance_snapshots (
+                    provider, currency, total_balance, granted_balance,
+                    topped_up_balance, is_available, report_week_start,
+                    report_text, captured_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    snapshot.provider,
+                    snapshot.currency,
+                    snapshot.total_balance,
+                    snapshot.granted_balance,
+                    snapshot.topped_up_balance,
+                    int(snapshot.is_available),
+                    db_week_start,
+                    snapshot.report_text,
+                    _to_mysql_datetime(snapshot.captured_at),
+                ),
+            )
+            cursor.execute(
+                """
+                SELECT provider, currency, total_balance, granted_balance,
+                       topped_up_balance, is_available, report_week_start,
+                       report_text, captured_at
+                FROM llm_balance_snapshots
+                WHERE provider = %s AND currency = %s AND report_week_start = %s
+                """,
+                (snapshot.provider, snapshot.currency, db_week_start),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise RuntimeError("Balance snapshot insert could not be read back")
+            connection.commit()
+            return _balance_snapshot_from_row(row)
+
+
 class MySqlSummarySelectionRepository:
     def __init__(self, connection_factory: ConnectionFactory) -> None:
         self.connection_factory = connection_factory
@@ -1733,7 +1861,9 @@ def _is_tolerated_duplicate_ddl(
     error_code = int(error.args[0])
     normalized = " ".join(statement.upper().split())
     if error_code == 1050:
-        return normalized.startswith("CREATE TABLE CHAT_SHARE_REQUESTS ")
+        return normalized.startswith("CREATE TABLE CHAT_SHARE_REQUESTS ") or normalized.startswith(
+            "CREATE TABLE IF NOT EXISTS LLM_BALANCE_SNAPSHOTS "
+        )
     if error_code == 1060:
         return normalized.startswith("ALTER TABLE ") and " ADD COLUMN " in normalized
     if error_code == 1061:
@@ -1745,12 +1875,23 @@ def _is_tolerated_duplicate_ddl(
 
 def _verify_migration_003_schema(
     columns: dict[tuple[str, str], str],
+    indexes: dict[tuple[str, str], int],
 ) -> None:
     required_columns = {
         ("prepared_summaries", "cache_hit_input_tokens"): "YES",
         ("prepared_summaries", "cache_miss_input_tokens"): "YES",
         ("prepared_summaries", "llm_call_count"): "YES",
         ("prepared_summaries", "estimated_cost_microusd"): "YES",
+        ("llm_balance_snapshots", "snapshot_id"): "NO",
+        ("llm_balance_snapshots", "provider"): "NO",
+        ("llm_balance_snapshots", "currency"): "NO",
+        ("llm_balance_snapshots", "total_balance"): "NO",
+        ("llm_balance_snapshots", "granted_balance"): "NO",
+        ("llm_balance_snapshots", "topped_up_balance"): "NO",
+        ("llm_balance_snapshots", "is_available"): "NO",
+        ("llm_balance_snapshots", "report_week_start"): "NO",
+        ("llm_balance_snapshots", "report_text"): "NO",
+        ("llm_balance_snapshots", "captured_at"): "NO",
     }
     missing_columns = [
         f"{table}.{column} ({nullable})"
@@ -1759,6 +1900,18 @@ def _verify_migration_003_schema(
     ]
     if missing_columns:
         details = ", ".join(missing_columns)
+        raise RuntimeError(f"Migration 003 schema verification failed: {details}")
+    required_indexes = {
+        ("llm_balance_snapshots", "PRIMARY"): 0,
+        ("llm_balance_snapshots", "uq_llm_balance_report_week"): 0,
+    }
+    missing_indexes = [
+        f"{table}.{index}"
+        for (table, index), non_unique in required_indexes.items()
+        if indexes.get((table, index)) != non_unique
+    ]
+    if missing_indexes:
+        details = ", ".join(missing_indexes)
         raise RuntimeError(f"Migration 003 schema verification failed: {details}")
 
 
@@ -1821,6 +1974,20 @@ def _from_mysql_datetime(value: datetime) -> datetime:
     if value.tzinfo is not None:
         return value.astimezone(timezone.utc)
     return value.replace(tzinfo=timezone.utc)
+
+
+def _balance_snapshot_from_row(row: dict[str, Any]) -> BalanceSnapshot:
+    return BalanceSnapshot(
+        provider=str(row["provider"]),
+        currency=str(row["currency"]),
+        total_balance=Decimal(str(row["total_balance"])),
+        granted_balance=Decimal(str(row["granted_balance"])),
+        topped_up_balance=Decimal(str(row["topped_up_balance"])),
+        is_available=bool(row["is_available"]),
+        report_week_start=_from_mysql_datetime(row["report_week_start"]),
+        report_text=str(row["report_text"]),
+        captured_at=_from_mysql_datetime(row["captured_at"]),
+    )
 
 
 def _queued_update_from_row(row: dict[str, Any]) -> QueuedUpdate:

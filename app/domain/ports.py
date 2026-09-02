@@ -4,13 +4,16 @@ from datetime import datetime
 from typing import Protocol, Sequence
 
 from app.domain.models import (
+    BalanceSnapshot,
     GeneratedSummary,
     LlmResult,
+    LlmBalance,
     QueuedUpdate,
     ReservationResult,
     StoredMessage,
     SummaryKind,
     TelegramMembership,
+    UsageTotals,
 )
 
 
@@ -205,4 +208,24 @@ class TelegramGateway(Protocol):
 
 class LlmGateway(Protocol):
     def generate_summary(self, system_prompt: str, user_prompt: str) -> LlmResult:
+        raise NotImplementedError
+
+
+class BalanceGateway(Protocol):
+    def get_balance(self) -> tuple[bool, tuple[LlmBalance, ...]]:
+        raise NotImplementedError
+
+
+class UsageRepository(Protocol):
+    def aggregate(
+        self, provider: str, start: datetime, end: datetime
+    ) -> UsageTotals:
+        raise NotImplementedError
+
+    def previous_snapshot(
+        self, provider: str, currency: str, week_start: datetime
+    ) -> BalanceSnapshot | None:
+        raise NotImplementedError
+
+    def get_or_create_snapshot(self, snapshot: BalanceSnapshot) -> BalanceSnapshot:
         raise NotImplementedError

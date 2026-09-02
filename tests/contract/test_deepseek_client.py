@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timezone
+from decimal import Decimal
 from io import BytesIO
 from urllib.error import HTTPError, URLError
 
@@ -23,6 +24,91 @@ class FakeResponse:
         if isinstance(self.payload, bytes):
             return self.payload
         return json.dumps(self.payload).encode("utf-8")
+
+
+def test_get_balance_uses_get_bearer_contract_and_returns_decimal_values(
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["method"] = request.get_method()
+        captured["authorization"] = request.get_header("Authorization")
+        captured["timeout"] = timeout
+        return FakeResponse(
+            {
+                "is_available": True,
+                "balance_infos": [
+                    {
+                        "currency": "CNY",
+                        "total_balance": "50.000000",
+                        "granted_balance": "0.000000",
+                        "topped_up_balance": "50.000000",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr("app.integrations.deepseek.urllib.request.urlopen", fake_urlopen)
+
+    available, balances = DeepSeekClient("secret").get_balance()
+
+    assert captured == {
+        "url": "https://api.deepseek.com/user/balance",
+        "method": "GET",
+        "authorization": "Bearer secret",
+        "timeout": 90,
+    }
+    assert available is True
+    assert len(balances) == 1
+    assert balances[0].currency == "CNY"
+    assert balances[0].total_balance == Decimal("50.000000")
+    assert balances[0].granted_balance == Decimal("0.000000")
+    assert balances[0].topped_up_balance == Decimal("50.000000")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"not-json",
+        b'{"is_available":true,"balance_infos":[{"currency":"CNY"}]}',
+        b'{"is_available":"yes","balance_infos":[]}',
+    ],
+)
+def test_get_balance_rejects_malformed_body_without_api_key(monkeypatch, payload) -> None:
+    monkeypatch.setattr(
+        "app.integrations.deepseek.urllib.request.urlopen",
+        lambda request, timeout: FakeResponse(payload),
+    )
+
+    with pytest.raises(DeepSeekApiError) as raised:
+        DeepSeekClient("balance-super-secret").get_balance()
+
+    assert "balance-super-secret" not in str(raised.value)
+
+
+def test_get_balance_http_error_does_not_leak_api_key(monkeypatch) -> None:
+    api_key = "balance-super-secret"
+    error = HTTPError(
+        url="https://api.deepseek.com/user/balance",
+        code=401,
+        msg="Unauthorized",
+        hdrs={},
+        fp=BytesIO(
+            json.dumps({"error": {"message": f"Bearer {api_key} rejected"}}).encode()
+        ),
+    )
+    monkeypatch.setattr(
+        "app.integrations.deepseek.urllib.request.urlopen",
+        lambda request, timeout: (_ for _ in ()).throw(error),
+    )
+
+    with pytest.raises(DeepSeekApiError) as raised:
+        DeepSeekClient(api_key).get_balance()
+
+    assert raised.value.status_code == 401
+    assert api_key not in str(raised.value)
 
 
 def test_generate_summary_uses_exact_request_contract_and_returns_usage(monkeypatch) -> None:
