@@ -5,9 +5,11 @@ import json
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from typing import Any
 
 from app.domain.models import LlmResult
+from app.services.llm_usage import estimate_flash_cost_microusd
 
 
 class DeepSeekApiError(RuntimeError):
@@ -39,6 +41,7 @@ class DeepSeekClient:
         self.timeout_seconds = timeout_seconds
 
     def generate_summary(self, system_prompt: str, user_prompt: str) -> LlmResult:
+        requested_at = datetime.now(timezone.utc)
         payload = {
             "model": self.model,
             "messages": [
@@ -81,13 +84,33 @@ class DeepSeekClient:
         usage = body.get("usage") if isinstance(body, dict) else {}
         if not isinstance(usage, dict):
             usage = {}
+        input_tokens = _optional_int(usage.get("prompt_tokens"))
+        output_tokens = _optional_int(usage.get("completion_tokens"))
+        cache_hit_input_tokens = _optional_int(
+            usage.get("prompt_cache_hit_tokens")
+        )
+        cache_miss_input_tokens = _optional_int(
+            usage.get("prompt_cache_miss_tokens")
+        )
+        if cache_miss_input_tokens is None:
+            cache_miss_input_tokens = max(
+                (input_tokens or 0) - (cache_hit_input_tokens or 0), 0
+            )
         return LlmResult(
             content=content,
             provider="deepseek",
             model=_response_model(body, self.model),
             duration_ms=round((time.monotonic() - started) * 1000),
-            input_tokens=_optional_int(usage.get("prompt_tokens")),
-            output_tokens=_optional_int(usage.get("completion_tokens")),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_hit_input_tokens=cache_hit_input_tokens,
+            cache_miss_input_tokens=cache_miss_input_tokens,
+            estimated_cost_microusd=estimate_flash_cost_microusd(
+                cache_hit_input_tokens or 0,
+                cache_miss_input_tokens,
+                output_tokens or 0,
+                requested_at,
+            ),
         )
 
 

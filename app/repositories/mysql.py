@@ -119,11 +119,31 @@ class MySqlDatabase:
             connection.close()
 
     def verify_migration(self, filename: str) -> None:
-        if filename != "002_private_summary_onboarding.sql":
+        if filename not in {
+            "002_private_summary_onboarding.sql",
+            "003_deepseek_usage.sql",
+        }:
             return
         connection = self.connect()
         try:
             with connection.cursor() as cursor:
+                if filename == "003_deepseek_usage.sql":
+                    cursor.execute(
+                        """
+                        SELECT table_name, column_name, is_nullable
+                        FROM information_schema.columns
+                        WHERE table_schema = DATABASE()
+                          AND table_name = 'prepared_summaries'
+                        """
+                    )
+                    columns = {
+                        (str(row["table_name"]), str(row["column_name"])): str(
+                            row["is_nullable"]
+                        )
+                        for row in cursor.fetchall()
+                    }
+                    _verify_migration_003_schema(columns)
+                    return
                 cursor.execute(
                     """
                     SELECT table_name, column_name, is_nullable
@@ -911,8 +931,14 @@ class MySqlSummaryRepository:
                 INSERT INTO prepared_summaries (
                     chat_id, summary_date, summary_kind, requester_user_id,
                     source_hash, summary_text, status, provider, model,
-                    fallback_type, prepared_at, created_at, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    fallback_type, latency_ms, input_tokens, output_tokens,
+                    input_characters, cache_hit_input_tokens,
+                    cache_miss_input_tokens, llm_call_count,
+                    estimated_cost_microusd, prepared_at, created_at, updated_at
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
                 ON DUPLICATE KEY UPDATE
                     summary_text = IF(
                         VALUES(summary_text) IS NOT NULL AND VALUES(summary_text) <> '',
@@ -923,6 +949,14 @@ class MySqlSummaryRepository:
                     provider = VALUES(provider),
                     model = VALUES(model),
                     fallback_type = VALUES(fallback_type),
+                    latency_ms = VALUES(latency_ms),
+                    input_tokens = VALUES(input_tokens),
+                    output_tokens = VALUES(output_tokens),
+                    input_characters = VALUES(input_characters),
+                    cache_hit_input_tokens = VALUES(cache_hit_input_tokens),
+                    cache_miss_input_tokens = VALUES(cache_miss_input_tokens),
+                    llm_call_count = VALUES(llm_call_count),
+                    estimated_cost_microusd = VALUES(estimated_cost_microusd),
                     prepared_at = VALUES(prepared_at),
                     updated_at = VALUES(updated_at)
                 """,
@@ -937,6 +971,14 @@ class MySqlSummaryRepository:
                     summary.provider,
                     summary.model,
                     summary.fallback_type,
+                    summary.latency_ms,
+                    summary.input_tokens,
+                    summary.output_tokens,
+                    summary.input_characters,
+                    summary.cache_hit_input_tokens,
+                    summary.cache_miss_input_tokens,
+                    summary.llm_call_count,
+                    summary.estimated_cost_microusd,
                     db_now,
                     db_now,
                     db_now,
@@ -1683,7 +1725,10 @@ def _is_tolerated_duplicate_ddl(
     statement: str,
     error: pymysql.MySQLError,
 ) -> bool:
-    if migration_name != "002_private_summary_onboarding.sql" or not error.args:
+    if migration_name not in {
+        "002_private_summary_onboarding.sql",
+        "003_deepseek_usage.sql",
+    } or not error.args:
         return False
     error_code = int(error.args[0])
     normalized = " ".join(statement.upper().split())
@@ -1696,6 +1741,25 @@ def _is_tolerated_duplicate_ddl(
             " ADD UNIQUE KEY " in normalized or " ADD KEY " in normalized
         )
     return False
+
+
+def _verify_migration_003_schema(
+    columns: dict[tuple[str, str], str],
+) -> None:
+    required_columns = {
+        ("prepared_summaries", "cache_hit_input_tokens"): "YES",
+        ("prepared_summaries", "cache_miss_input_tokens"): "YES",
+        ("prepared_summaries", "llm_call_count"): "YES",
+        ("prepared_summaries", "estimated_cost_microusd"): "YES",
+    }
+    missing_columns = [
+        f"{table}.{column} ({nullable})"
+        for (table, column), nullable in required_columns.items()
+        if columns.get((table, column)) != nullable
+    ]
+    if missing_columns:
+        details = ", ".join(missing_columns)
+        raise RuntimeError(f"Migration 003 schema verification failed: {details}")
 
 
 def _verify_migration_002_schema(

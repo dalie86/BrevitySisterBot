@@ -7,6 +7,7 @@ from app.repositories.mysql import (
     MySqlDatabase,
     _split_sql_statements,
     _verify_migration_002_schema,
+    _verify_migration_003_schema,
     apply_migrations,
     migration_files,
 )
@@ -42,6 +43,7 @@ def test_private_onboarding_migration_is_additive() -> None:
     assert [path.name for path in files] == [
         "001_initial.sql",
         "002_private_summary_onboarding.sql",
+        "003_deepseek_usage.sql",
     ]
 
     sql = files[1].read_text(encoding="utf-8")
@@ -49,6 +51,20 @@ def test_private_onboarding_migration_is_additive() -> None:
     assert "MODIFY private_link_token CHAR(32) NOT NULL" in sql
     assert "UNIQUE KEY uq_tracked_chats_private_link" in sql
     assert "CREATE TABLE chat_share_requests" in sql
+
+
+def test_deepseek_usage_migration_is_additive_and_preserves_old_rows() -> None:
+    files = migration_files(Path("migrations"))
+    sql = files[2].read_text(encoding="utf-8")
+
+    assert _split_sql_statements(sql) == [
+        "ALTER TABLE prepared_summaries ADD COLUMN cache_hit_input_tokens INT NULL",
+        "ALTER TABLE prepared_summaries ADD COLUMN cache_miss_input_tokens INT NULL",
+        "ALTER TABLE prepared_summaries ADD COLUMN llm_call_count INT NULL",
+        "ALTER TABLE prepared_summaries ADD COLUMN estimated_cost_microusd BIGINT NULL",
+    ]
+    assert "UPDATE " not in sql.upper()
+    assert "DELETE " not in sql.upper()
 
 
 def test_migration_files_are_sorted_and_only_include_sql(tmp_path: Path) -> None:
@@ -112,6 +128,11 @@ MIGRATION_002_SQL = Path("migrations/002_private_summary_onboarding.sql").read_t
 )
 
 
+MIGRATION_003_SQL = Path("migrations/003_deepseek_usage.sql").read_text(
+    encoding="utf-8"
+)
+
+
 @pytest.mark.parametrize(
     "interrupt_after", range(1, len(_split_sql_statements(MIGRATION_002_SQL)))
 )
@@ -128,6 +149,25 @@ def test_migration_002_restarts_after_each_original_ddl_boundary(interrupt_after
     database.connect = lambda: RestartConnection(completed, None)  # type: ignore[method-assign]
     database.execute_script(
         MIGRATION_002_SQL, migration_name="002_private_summary_onboarding.sql"
+    )
+
+
+@pytest.mark.parametrize(
+    "interrupt_after", range(1, len(_split_sql_statements(MIGRATION_003_SQL)))
+)
+def test_migration_003_restarts_after_each_original_ddl_boundary(interrupt_after) -> None:
+    completed: set[str] = set()
+    database = object.__new__(MySqlDatabase)
+    database.connect = lambda: RestartConnection(completed, interrupt_after)  # type: ignore[method-assign]
+
+    with pytest.raises(ConnectionError, match="interruption"):
+        database.execute_script(
+            MIGRATION_003_SQL, migration_name="003_deepseek_usage.sql"
+        )
+
+    database.connect = lambda: RestartConnection(completed, None)  # type: ignore[method-assign]
+    database.execute_script(
+        MIGRATION_003_SQL, migration_name="003_deepseek_usage.sql"
     )
 
 
@@ -187,3 +227,49 @@ def test_migration_002_verifies_schema_before_recording_checksum(tmp_path: Path)
 def test_migration_002_schema_verification_rejects_missing_postcondition() -> None:
     with pytest.raises(RuntimeError, match="tracked_chats.private_link_token"):
         _verify_migration_002_schema({}, {})
+
+
+def test_migration_003_schema_verification_rejects_missing_postcondition() -> None:
+    with pytest.raises(RuntimeError, match="cache_hit_input_tokens"):
+        _verify_migration_003_schema({})
+
+
+def test_migration_003_schema_verification_accepts_all_nullable_columns() -> None:
+    _verify_migration_003_schema(
+        {
+            ("prepared_summaries", "cache_hit_input_tokens"): "YES",
+            ("prepared_summaries", "cache_miss_input_tokens"): "YES",
+            ("prepared_summaries", "llm_call_count"): "YES",
+            ("prepared_summaries", "estimated_cost_microusd"): "YES",
+        }
+    )
+
+
+def test_migration_003_verifies_schema_before_recording_checksum(tmp_path: Path) -> None:
+    (tmp_path / "003_deepseek_usage.sql").write_text("SELECT 1;", encoding="utf-8")
+
+    class FakeDatabase:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def applied_migrations(self):
+            return {}
+
+        def execute_script(self, sql, migration_name=None):
+            self.calls.append(("execute", migration_name))
+
+        def verify_migration(self, migration_name):
+            self.calls.append(("verify", migration_name))
+
+        def record_migration(self, filename, checksum):
+            self.calls.append(("record", filename))
+
+    database = FakeDatabase()
+
+    apply_migrations(database, tmp_path)
+
+    assert database.calls == [
+        ("execute", "003_deepseek_usage.sql"),
+        ("verify", "003_deepseek_usage.sql"),
+        ("record", "003_deepseek_usage.sql"),
+    ]

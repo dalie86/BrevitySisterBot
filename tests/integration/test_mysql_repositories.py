@@ -5,11 +5,17 @@ from unittest.mock import patch
 import pymysql
 import pytest
 
-from app.domain.models import StoredMessage
+from app.domain.models import (
+    GeneratedSummary,
+    StoredMessage,
+    SummaryKind,
+    SummaryStatus,
+)
 from app.repositories.mysql import (
     MySqlMaintenanceStore,
     MySqlMemberRepository,
     MySqlMessageRepository,
+    MySqlSummaryRepository,
     MySqlTelegramEffectRepository,
     MySqlTrackedChatRepository,
     MySqlUpdateRepository,
@@ -61,6 +67,49 @@ class RecordingConnection:
 
     def close(self) -> None:
         self.closed = True
+
+
+def test_summary_save_records_all_usage_fields_in_insert_and_upsert() -> None:
+    connection = RecordingConnection()
+    repository = MySqlSummaryRepository(lambda: connection)
+    summary = GeneratedSummary(
+        chat_id=-1001,
+        summary_date="2026-07-16",
+        kind=SummaryKind.ON_DEMAND,
+        source_hash="a" * 64,
+        text="summary",
+        status=SummaryStatus.PREPARED,
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        latency_ms=40,
+        input_tokens=312,
+        output_tokens=36,
+        input_characters=999,
+        cache_hit_input_tokens=72,
+        cache_miss_input_tokens=240,
+        llm_call_count=2,
+        estimated_cost_microusd=70,
+    )
+
+    repository.save(summary, 42, NOW)
+
+    sql, params = connection.cursor_instance.executions[0]
+    metric_fields = (
+        "latency_ms",
+        "input_tokens",
+        "output_tokens",
+        "input_characters",
+        "cache_hit_input_tokens",
+        "cache_miss_input_tokens",
+        "llm_call_count",
+        "estimated_cost_microusd",
+    )
+    for field in metric_fields:
+        assert field in sql.split("ON DUPLICATE KEY UPDATE", 1)[0]
+        assert f"{field} = VALUES({field})" in sql
+    assert params[10:18] == (40, 312, 36, 999, 72, 240, 2, 70)
+    assert connection.commits == 1
+    assert connection.closed is True
 
 
 def test_enqueue_serializes_payload_and_uses_duplicate_safe_insert() -> None:

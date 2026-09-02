@@ -66,9 +66,35 @@ def test_generate_summary_uses_exact_request_contract_and_returns_usage(monkeypa
     assert result.content == '{"headline":"Итог","topics":[]}'
     assert result.input_tokens == 120
     assert result.output_tokens == 30
+    assert result.cache_hit_input_tokens == 20
+    assert result.cache_miss_input_tokens == 100
+    assert result.estimated_cost_microusd >= 0
     assert result.provider == "deepseek"
     assert result.model == "deepseek-v4-flash-0731"
     assert "secret" not in repr(captured["body"])
+
+
+def test_missing_cache_miss_usage_is_derived_from_prompt_and_hit_tokens(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.integrations.deepseek.urllib.request.urlopen",
+        lambda request, timeout: FakeResponse(
+            {
+                "choices": [{"message": {"content": "{}"}}],
+                "usage": {
+                    "prompt_tokens": 120,
+                    "prompt_cache_hit_tokens": 30,
+                    "completion_tokens": 10,
+                },
+            }
+        ),
+    )
+
+    result = DeepSeekClient("secret").generate_summary("system", "user")
+
+    assert result.cache_hit_input_tokens == 30
+    assert result.cache_miss_input_tokens == 90
 
 
 @pytest.mark.parametrize("status_code", [400, 401, 402, 422, 429, 500, 503])

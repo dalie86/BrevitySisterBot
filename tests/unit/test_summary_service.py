@@ -148,6 +148,91 @@ def test_invalid_json_gets_one_repair_attempt_then_fallback() -> None:
     assert llm.call_count == 2
 
 
+def test_initial_and_repair_usage_is_aggregated_before_saving() -> None:
+    class MeteredRepairingLlm(FakeLlm):
+        def generate_summary(self, system_prompt, user_prompt):
+            self.call_count += 1
+            self.system_prompts.append(system_prompt)
+            self.user_prompts.append(user_prompt)
+            if self.call_count == 1:
+                return LlmResult(
+                    content="not-json",
+                    provider="deepseek",
+                    model="initial-model",
+                    duration_ms=11,
+                    input_tokens=101,
+                    output_tokens=17,
+                    cache_hit_input_tokens=31,
+                    cache_miss_input_tokens=70,
+                    estimated_cost_microusd=23,
+                )
+            return LlmResult(
+                content='{"headline":"Исправлено","topics":[]}',
+                provider="deepseek",
+                model="repair-model",
+                duration_ms=29,
+                input_tokens=211,
+                output_tokens=19,
+                cache_hit_input_tokens=41,
+                cache_miss_input_tokens=170,
+                estimated_cost_microusd=47,
+            )
+
+    llm = MeteredRepairingLlm()
+    service, _, summaries = make_service(5, llm)
+
+    result = service.generate(-1001, SummaryKind.ON_DEMAND, 42, NOW)
+
+    saved = summaries.saved[0][0]
+    assert result == saved
+    assert saved.provider == "deepseek"
+    assert saved.model == "repair-model"
+    assert saved.latency_ms == 40
+    assert saved.input_tokens == 312
+    assert saved.output_tokens == 36
+    assert saved.cache_hit_input_tokens == 72
+    assert saved.cache_miss_input_tokens == 240
+    assert saved.llm_call_count == 2
+    assert saved.input_characters == len(llm.user_prompts[0])
+    assert saved.estimated_cost_microusd == 70
+
+
+def test_successful_invalid_call_metrics_survive_heuristic_fallback() -> None:
+    class InvalidThenErrorLlm(FakeLlm):
+        def generate_summary(self, system_prompt, user_prompt):
+            self.call_count += 1
+            self.user_prompts.append(user_prompt)
+            if self.call_count == 2:
+                raise TimeoutError("repair failed")
+            return LlmResult(
+                content="not-json",
+                provider="deepseek",
+                model="last-successful-model",
+                duration_ms=13,
+                input_tokens=50,
+                output_tokens=7,
+                cache_hit_input_tokens=10,
+                cache_miss_input_tokens=40,
+                estimated_cost_microusd=9,
+            )
+
+    llm = InvalidThenErrorLlm()
+    service, _, _ = make_service(5, llm)
+
+    result = service.generate(-1001, SummaryKind.ON_DEMAND, 42, NOW)
+
+    assert result.fallback_type == "heuristic"
+    assert result.provider == "deepseek"
+    assert result.model == "last-successful-model"
+    assert result.latency_ms == 13
+    assert result.input_tokens == 50
+    assert result.output_tokens == 7
+    assert result.cache_hit_input_tokens == 10
+    assert result.cache_miss_input_tokens == 40
+    assert result.llm_call_count == 1
+    assert result.estimated_cost_microusd == 9
+
+
 def test_active_generation_is_not_sent_to_llm_twice() -> None:
     service, llm, summaries = make_service(5)
     messages = service.messages.list_between(

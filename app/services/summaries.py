@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from app.content import BotCopy
 from app.domain.models import (
     GeneratedSummary,
+    LlmResult,
     StoredMessage,
     SummaryKind,
     SummaryStatus,
@@ -115,12 +116,15 @@ class SummaryService:
         provider = None
         model = None
         fallback_type = None
+        llm_results: list[LlmResult] = []
+        user_prompt = _build_user_prompt(messages, self.copy)
         try:
             system_prompt = self.copy.value("prompts", "system")
             llm_result = self.llm.generate_summary(
                 system_prompt,
-                _build_user_prompt(messages, self.copy),
+                user_prompt,
             )
+            llm_results.append(llm_result)
             payload = _parse_payload(llm_result.content)
             if payload is None:
                 repair = self.llm.generate_summary(
@@ -131,16 +135,18 @@ class SummaryService:
                         invalid_model_response=llm_result.content[:6000],
                     ),
                 )
+                llm_results.append(repair)
                 payload = _parse_payload(repair.content)
-                llm_result = repair
             if payload is None:
                 raise ValueError("unusable summary JSON")
             text = _render_payload(payload, self.copy)
-            provider = llm_result.provider
-            model = llm_result.model
         except Exception:
             text = _heuristic_summary(messages, self.copy)
             fallback_type = "heuristic"
+
+        if llm_results:
+            provider = llm_results[-1].provider
+            model = llm_results[-1].model
 
         summary = GeneratedSummary(
             chat_id=chat_id,
@@ -153,6 +159,20 @@ class SummaryService:
             model=model,
             fallback_type=fallback_type,
             message_count=len(messages),
+            latency_ms=sum(result.duration_ms for result in llm_results),
+            input_tokens=sum(result.input_tokens or 0 for result in llm_results),
+            output_tokens=sum(result.output_tokens or 0 for result in llm_results),
+            input_characters=len(user_prompt),
+            cache_hit_input_tokens=sum(
+                result.cache_hit_input_tokens or 0 for result in llm_results
+            ),
+            cache_miss_input_tokens=sum(
+                result.cache_miss_input_tokens or 0 for result in llm_results
+            ),
+            llm_call_count=len(llm_results),
+            estimated_cost_microusd=sum(
+                result.estimated_cost_microusd for result in llm_results
+            ),
         )
         self.summaries.save(summary, requester_user_id, now)
         return summary

@@ -87,6 +87,9 @@ class LlmResult:
     duration_ms: int
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cache_hit_input_tokens: int | None = None
+    cache_miss_input_tokens: int | None = None
+    estimated_cost_microusd: int = 0
 
 
 @dataclass(frozen=True)
@@ -102,6 +105,14 @@ class GeneratedSummary:
     fallback_type: str | None = None
     outcome: str = "generated"
     message_count: int = 0
+    latency_ms: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    input_characters: int = 0
+    cache_hit_input_tokens: int = 0
+    cache_miss_input_tokens: int = 0
+    llm_call_count: int = 0
+    estimated_cost_microusd: int = 0
 
 
 def build_source_hash(
