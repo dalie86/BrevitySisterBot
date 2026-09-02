@@ -153,6 +153,7 @@ topped_up_balance DECIMAL(18,6)
 is_available TINYINT(1)
 captured_at DATETIME(6)
 report_week_start DATE
+report_text TEXT
 UNIQUE KEY (provider, currency, report_week_start)
 ```
 
@@ -189,6 +190,9 @@ python -m app.jobs.cli usage-report
 видит уже отправленный effect и не создаёт дубликат. Balance snapshot также
 создаётся через `INSERT ... ON DUPLICATE KEY` по неделе; сбой Telegram после
 сохранения снимка безопасно возобновляется с тем же текстом и тем же effect key.
+Поле `report_text` замораживает payload при первом запуске недели: повторный
+запуск не пересчитывает его из уже изменившейся статистики и поэтому не
+создаёт payload-hash conflict в durable effect.
 
 Production cron:
 
