@@ -8,6 +8,8 @@ def test_deploy_excludes_secrets_runtime_data_and_mvp_databases() -> None:
     for excluded in (
         "--exclude .env",
         "--exclude .env.hosting",
+        "--exclude .venv",
+        "--exclude .venv-*",
         "--exclude bot.db",
         "--exclude archive.db",
         "--exclude backups",
@@ -35,6 +37,21 @@ def test_deploy_backs_up_before_running_migrations() -> None:
     script = Path("scripts/deploy_beget.exp").read_text(encoding="utf-8")
 
     assert script.index("scripts/backup_db.sh") < script.index("scripts/migrate.py")
+
+
+def test_deploy_runs_deepseek_smoke_before_passenger_restart() -> None:
+    script = Path("scripts/deploy_beget.exp").read_text(encoding="utf-8")
+
+    command_order = (
+        "scripts/backup_db.sh",
+        "-m pip install",
+        "scripts/migrate.py",
+        "scripts/check_deepseek.py",
+        "touch tmp/restart.txt",
+    )
+
+    positions = [script.index(command) for command in command_order]
+    assert positions == sorted(positions)
 
 
 def test_beget_defaults_to_python_310() -> None:

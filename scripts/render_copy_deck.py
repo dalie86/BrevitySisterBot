@@ -81,7 +81,7 @@ CONTEXTS = {
     (
         "fallback",
         "document",
-    ): "Groq недоступен, вернул ошибку или невалидный ответ; бот составляет детерминированную локальную сводку без интерпретации содержания.",
+    ): "DeepSeek недоступен, вернул ошибку или невалидный ответ; бот составляет детерминированную локальную сводку без интерпретации содержания.",
     (
         "fallback",
         "participants_unknown",
@@ -175,7 +175,7 @@ TOML как единый источник текстов. Перепиши по�
 
 
 def render(copy: BotCopy) -> str:
-    sections = ["# BrevitySisterBot 0.2.0 — вординг и промпты", "", PREAMBLE]
+    sections = ["# BrevitySisterBot 0.3.0 — вординг и промпты", "", PREAMBLE]
     for section in SECTION_ORDER:
         sections.extend((f"## `{section}`", ""))
         for key, value in copy.sections[section].items():

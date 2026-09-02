@@ -74,7 +74,7 @@ set target "$remote:$config(BEGET_REMOTE_DIR)/"
 spawn rsync -rltz --omit-dir-times --no-perms --delete \
     --exclude .git \
     --exclude .venv \
-    --exclude .venv-0.2 \
+    --exclude .venv-* \
     --exclude .env \
     --exclude .env.hosting \
     --exclude .ssh \
@@ -100,6 +100,7 @@ set install_command [format {
     if [ ! -x .venv/bin/python ] || [ -L .venv/bin/python ] || ! .venv/bin/python -m pip --version >/dev/null 2>&1; then /usr/bin/virtualenv --copies -p %s --clear .venv; fi &&
     .venv/bin/python -m pip install --disable-pip-version-check -e . &&
     .venv/bin/python scripts/migrate.py &&
+    .venv/bin/python scripts/check_deepseek.py &&
     touch tmp/restart.txt
 } $config(BEGET_REMOTE_DIR) $config(BEGET_PYTHON)]
 
