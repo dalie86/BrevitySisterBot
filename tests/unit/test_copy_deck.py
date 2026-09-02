@@ -46,6 +46,16 @@ def test_copy_deck_preserves_private_onboarding_constraints() -> None:
     assert "если их несколько, бот предлагает выбор" in deck
 
 
+def test_copy_deck_includes_weekly_usage_report_wording() -> None:
+    deck = render_copy_deck.render(
+        render_copy_deck.BotCopy.load(render_copy_deck.COPY_PATH)
+    )
+
+    assert "`usage_report.weekly_base`" in deck
+    assert "`usage_report.insufficient_balance`" in deck
+    assert "`usage_report.previous_unavailable`" in deck
+
+
 def test_check_reports_drift_without_overwriting(
     tmp_path: Path, monkeypatch
 ) -> None:

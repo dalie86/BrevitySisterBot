@@ -331,3 +331,74 @@ TOML как единый источник текстов. Перепиши по�
 Исправь ответ в требуемый JSON без добавления фактов:
 {{invalid_model_response}}
 ```
+
+## `usage_report`
+
+### `usage_report.weekly_base`
+
+Контекст: Служебный еженедельный отчёт владельцу без данных групп и участников.
+
+```text
+DeepSeek — неделя с {{week_start}}
+Вызовы: {{llm_calls}} (repair: {{repair_calls}})
+Токены — cache hit: {{cache_hit_tokens}}; cache miss: {{cache_miss_tokens}}; output: {{output_tokens}}
+Расход по оценке: {{estimated_cost_usd}} USD
+```
+
+### `usage_report.balance`
+
+```text
+Баланс: {{total_balance}} {{currency}}
+```
+
+### `usage_report.temporary_balance_failure`
+
+```text
+Баланс недоступен временно; локальная статистика сохранена.
+```
+
+### `usage_report.insufficient_balance`
+
+Контекст: DeepSeek ответил HTTP 402 при проверке баланса.
+
+```text
+На балансе DeepSeek недостаточно средств; локальная статистика сохранена.
+```
+
+### `usage_report.first_forecast`
+
+```text
+прогноз появится через неделю
+```
+
+### `usage_report.previous_unavailable`
+
+Контекст: Предыдущая недельная проверка баланса была недоступна.
+
+```text
+прошлый баланс не был получен; прогноз расхода недоступен
+```
+
+### `usage_report.top_up`
+
+```text
+Пополнение: +{{delta}} {{currency}}
+```
+
+### `usage_report.unchanged`
+
+```text
+Изменение: 0.00 {{currency}}
+```
+
+### `usage_report.spend_delta`
+
+```text
+Изменение: −{{delta}} {{currency}}
+```
+
+### `usage_report.runway`
+
+```text
+При таком расходе: примерно {{weeks}} недель
+```

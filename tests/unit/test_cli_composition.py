@@ -39,6 +39,7 @@ def test_cli_exposes_usage_commands() -> None:
 def test_usage_returns_local_and_balance_data_without_constructing_telegram(
     monkeypatch,
 ) -> None:
+    copy = object()
     class FakeService:
         def inspect(self, now):
             assert now == NOW
@@ -46,18 +47,18 @@ def test_usage_returns_local_and_balance_data_without_constructing_telegram(
 
     monkeypatch.setattr(cli, "MySqlUsageRepository", lambda connect: object())
     monkeypatch.setattr(
-        cli, "UsageReportService", lambda repository, balance_client: FakeService()
+        cli,
+        "UsageReportService",
+        lambda repository, balance_client, loaded_copy: (
+            FakeService() if loaded_copy is copy else None
+        ),
     )
     monkeypatch.setattr(
         cli,
         "TelegramClient",
         lambda token: (_ for _ in ()).throw(AssertionError("Telegram not allowed")),
     )
-    monkeypatch.setattr(
-        cli.BotCopy,
-        "load",
-        lambda path: (_ for _ in ()).throw(AssertionError("unrelated composition")),
-    )
+    monkeypatch.setattr(cli.BotCopy, "load", lambda path: copy)
 
     result = cli._run_command(
         "usage", make_settings(), SimpleNamespace(connect=lambda: None), NOW
@@ -83,6 +84,21 @@ def test_usage_report_requires_owner_chat_id_before_telegram_send(monkeypatch) -
             SimpleNamespace(connect=lambda: None),
             NOW,
         )
+
+
+def test_main_reports_missing_owner_without_traceback_or_database(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cli, "load_dotenv", lambda: None)
+    monkeypatch.setattr(cli, "load_settings", lambda: make_settings())
+    monkeypatch.setattr(
+        cli,
+        "MySqlDatabase",
+        lambda settings: (_ for _ in ()).throw(AssertionError("database not allowed")),
+    )
+
+    assert cli.main(["usage-report"]) == 2
+    captured = capsys.readouterr()
+    assert "OWNER_CHAT_ID" in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_usage_report_retries_use_stable_weekly_update_id_and_send_once(
@@ -138,9 +154,12 @@ def test_usage_report_retries_use_stable_weekly_update_id_and_send_once(
 
     effects = FakeEffects()
     telegram = FakeTelegram()
+    monkeypatch.setattr(cli.BotCopy, "load", lambda path: object())
     monkeypatch.setattr(cli, "MySqlUsageRepository", lambda connect: object())
     monkeypatch.setattr(
-        cli, "UsageReportService", lambda repository, balance_client: FakeService()
+        cli,
+        "UsageReportService",
+        lambda repository, balance_client, copy: FakeService(),
     )
     monkeypatch.setattr(cli, "MySqlTelegramEffectRepository", lambda connect: effects)
     monkeypatch.setattr(cli, "TelegramClient", lambda token: telegram)

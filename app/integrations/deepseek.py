@@ -182,6 +182,8 @@ def _retry_after_seconds(headers: Any) -> int | None:
 
 
 def _http_error_message(error: urllib.error.HTTPError, api_key: str) -> str:
+    if error.code == 402:
+        return "DeepSeek insufficient balance"
     try:
         payload = json.loads(error.read().decode("utf-8").strip())
         message = payload.get("error", {}).get("message")

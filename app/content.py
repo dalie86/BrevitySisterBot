@@ -24,6 +24,22 @@ REQUIRED: dict[tuple[str, str], frozenset[str]] = {
         {"iso_datetime", "participant_name", "message_text"}
     ),
     ("prompts", "repair"): frozenset({"invalid_model_response"}),
+    ("usage_report", "weekly_base"): frozenset(
+        {
+            "week_start",
+            "llm_calls",
+            "repair_calls",
+            "cache_hit_tokens",
+            "cache_miss_tokens",
+            "output_tokens",
+            "estimated_cost_usd",
+        }
+    ),
+    ("usage_report", "balance"): frozenset({"total_balance", "currency"}),
+    ("usage_report", "top_up"): frozenset({"delta", "currency"}),
+    ("usage_report", "unchanged"): frozenset({"currency"}),
+    ("usage_report", "spend_delta"): frozenset({"delta", "currency"}),
+    ("usage_report", "runway"): frozenset({"weeks"}),
 }
 STATIC_KEYS = {
     ("messages", key)
@@ -44,6 +60,7 @@ STATIC_KEYS = {
         "private_link_invalid",
         "selected_group_not_connected",
         "group_access_unverifiable",
+        "private_welcome",
     }
 } | {
     ("buttons", "get_private_summary"),
@@ -52,6 +69,10 @@ STATIC_KEYS = {
     ("fallback", "participants_unknown"),
     ("fallback", "messages_separator"),
     ("prompts", "system"),
+    ("usage_report", "temporary_balance_failure"),
+    ("usage_report", "insufficient_balance"),
+    ("usage_report", "first_forecast"),
+    ("usage_report", "previous_unavailable"),
 }
 
 

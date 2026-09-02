@@ -3,9 +3,11 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_FLOOR
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from app.content import BotCopy
 from app.domain.models import (
     BalanceSnapshot,
     FrozenUsageReport,
@@ -23,10 +25,14 @@ class UsageReportService:
         self,
         repository: UsageRepository,
         balance_client: BalanceGateway,
+        copy: BotCopy | None = None,
         timezone_name: str = "Europe/Moscow",
     ) -> None:
         self.repository = repository
         self.balance_client = balance_client
+        self.copy = copy or BotCopy.load(
+            Path(__file__).resolve().parents[2] / "content" / "bot_copy.ru.toml"
+        )
         self.timezone = ZoneInfo(timezone_name)
 
     def inspect(self, now: datetime) -> dict[str, Any]:
@@ -37,7 +43,8 @@ class UsageReportService:
         month = self.repository.aggregate(
             "deepseek", month_start.astimezone(timezone.utc), utc_now
         )
-        balance_available, balances = self._live_balance()
+        balance_status, balances = self._live_balance()
+        balance_available = balance_status == "available"
         selected = _preferred_balance(balances) if balance_available else None
         previous = self.repository.previous_snapshot(
             "deepseek", selected.currency if selected is not None else "CNY", week_start
@@ -50,6 +57,7 @@ class UsageReportService:
             "week": _totals_dict(week),
             "month": _totals_dict(month),
             "balance_available": balance_available,
+            "balance_status": balance_status,
             "balances": [_balance_dict(balance) for balance in balances],
             "previous_balance": (
                 _snapshot_dict(previous) if previous is not None else None
@@ -61,16 +69,21 @@ class UsageReportService:
         totals = self.repository.aggregate(
             "deepseek", week_start.astimezone(timezone.utc), utc_now
         )
-        available, balances = self._live_balance()
-        selected = _preferred_balance(balances) if available else None
-        previous = (
-            self.repository.previous_snapshot(
-                "deepseek", selected.currency, week_start
-            )
-            if selected is not None
-            else None
+        balance_status, balances = self._live_balance()
+        selected = (
+            _preferred_balance(balances) if balance_status == "available" else None
         )
-        report_text = _format_weekly_report(week_start, totals, selected, previous)
+        previous = self.repository.previous_snapshot(
+            "deepseek", selected.currency if selected is not None else "CNY", week_start
+        )
+        report_text = _format_weekly_report(
+            self.copy,
+            week_start,
+            totals,
+            selected,
+            previous,
+            balance_status,
+        )
 
         zero = Decimal("0")
         snapshot = self.repository.get_or_create_snapshot(
@@ -107,12 +120,19 @@ class UsageReportService:
         )
         return week_start, month_start, utc_now
 
-    def _live_balance(self) -> tuple[bool, tuple[LlmBalance, ...]]:
+    def _live_balance(self) -> tuple[str, tuple[LlmBalance, ...]]:
         try:
             available, balances = self.balance_client.get_balance()
-        except Exception:
-            return False, ()
-        return bool(available), tuple(balances)
+        except Exception as exc:
+            status = (
+                "insufficient_balance"
+                if getattr(exc, "status_code", None) == 402
+                else "temporarily_unavailable"
+            )
+            return status, ()
+        return ("available" if available else "temporarily_unavailable"), tuple(
+            balances
+        )
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -159,44 +179,82 @@ def _usd(microusd: int) -> str:
 
 
 def _format_weekly_report(
+    copy: BotCopy,
     week_start: datetime,
     totals: UsageTotals,
     balance: LlmBalance | None,
     previous: BalanceSnapshot | None,
+    balance_status: str,
 ) -> str:
     lines = [
-        f"DeepSeek — неделя с {week_start:%d.%m.%Y}",
-        f"Вызовы: {totals.llm_call_count:,} (repair: {totals.repair_call_count:,})",
-        (
-            "Токены — "
-            f"cache hit: {totals.cache_hit_input_tokens:,}; "
-            f"cache miss: {totals.cache_miss_input_tokens:,}; "
-            f"output: {totals.output_tokens:,}"
-        ),
-        f"Расход по оценке: {_usd(totals.estimated_cost_microusd)} USD",
+        copy.render(
+            "usage_report",
+            "weekly_base",
+            week_start=f"{week_start:%d.%m.%Y}",
+            llm_calls=_number(totals.llm_call_count),
+            repair_calls=_number(totals.repair_call_count),
+            cache_hit_tokens=_number(totals.cache_hit_input_tokens),
+            cache_miss_tokens=_number(totals.cache_miss_input_tokens),
+            output_tokens=_number(totals.output_tokens),
+            estimated_cost_usd=_usd(totals.estimated_cost_microusd),
+        )
     ]
-    lines = [line.replace(",", " ") for line in lines]
     if balance is None:
-        lines.append("Баланс недоступен; локальная статистика сохранена.")
+        key = (
+            "insufficient_balance"
+            if balance_status == "insufficient_balance"
+            else "temporary_balance_failure"
+        )
+        lines.append(copy.value("usage_report", key))
         return "\n".join(lines)
 
-    lines.append(f"Баланс: {balance.total_balance:.2f} {balance.currency}")
+    lines.append(
+        copy.render(
+            "usage_report",
+            "balance",
+            total_balance=f"{balance.total_balance:.2f}",
+            currency=balance.currency,
+        )
+    )
     if previous is None:
-        lines.append("прогноз появится через неделю")
+        lines.append(copy.value("usage_report", "first_forecast"))
+        return "\n".join(lines)
+    if not previous.is_available:
+        lines.append(copy.value("usage_report", "previous_unavailable"))
         return "\n".join(lines)
 
     delta = balance.total_balance - previous.total_balance
     if delta > 0:
-        lines.append(f"Пополнение: +{delta:.2f} {balance.currency}")
+        lines.append(
+            copy.render(
+                "usage_report",
+                "top_up",
+                delta=f"{delta:.2f}",
+                currency=balance.currency,
+            )
+        )
         return "\n".join(lines)
     if delta == 0:
-        lines.append(f"Изменение: 0.00 {balance.currency}")
+        lines.append(
+            copy.render("usage_report", "unchanged", currency=balance.currency)
+        )
         return "\n".join(lines)
 
     spend = -delta
-    lines.append(f"Изменение: −{spend:.2f} {balance.currency}")
+    lines.append(
+        copy.render(
+            "usage_report",
+            "spend_delta",
+            delta=f"{spend:.2f}",
+            currency=balance.currency,
+        )
+    )
     weeks = int(
         (balance.total_balance / spend).quantize(Decimal("1"), rounding=ROUND_FLOOR)
     )
-    lines.append(f"При таком расходе: примерно {weeks} недель")
+    lines.append(copy.render("usage_report", "runway", weeks=weeks))
     return "\n".join(lines)
+
+
+def _number(value: int) -> str:
+    return f"{value:,}".replace(",", " ")

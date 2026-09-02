@@ -111,6 +111,26 @@ def test_get_balance_http_error_does_not_leak_api_key(monkeypatch) -> None:
     assert api_key not in str(raised.value)
 
 
+def test_http_402_is_classified_as_insufficient_balance(monkeypatch) -> None:
+    error = HTTPError(
+        url="https://api.deepseek.com/user/balance",
+        code=402,
+        msg="Payment Required",
+        hdrs={},
+        fp=BytesIO(b'{}'),
+    )
+    monkeypatch.setattr(
+        "app.integrations.deepseek.urllib.request.urlopen",
+        lambda request, timeout: (_ for _ in ()).throw(error),
+    )
+
+    with pytest.raises(DeepSeekApiError) as raised:
+        DeepSeekClient("secret").get_balance()
+
+    assert raised.value.status_code == 402
+    assert str(raised.value) == "DeepSeek insufficient balance"
+
+
 def test_generate_summary_uses_exact_request_contract_and_returns_usage(monkeypatch) -> None:
     captured = {}
     clock_calls = []

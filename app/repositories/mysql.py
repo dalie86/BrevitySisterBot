@@ -1064,7 +1064,6 @@ class MySqlUsageRepository:
                 FROM llm_balance_snapshots
                 WHERE provider = %s
                   AND currency = %s
-                  AND is_available = 1
                   AND report_week_start < %s
                 ORDER BY report_week_start DESC
                 LIMIT 1

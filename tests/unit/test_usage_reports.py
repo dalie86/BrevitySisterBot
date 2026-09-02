@@ -3,6 +3,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from app.domain.models import BalanceSnapshot, LlmBalance, UsageTotals
+from app.integrations.deepseek import DeepSeekApiError
 from app.services.usage_reports import UsageReportService
 
 
@@ -54,12 +55,17 @@ class FakeUsageRepository:
 
 
 class FakeBalanceClient:
-    def __init__(self, total=Decimal("49"), *, fail=False, currency="CNY") -> None:
+    def __init__(
+        self, total=Decimal("49"), *, fail=False, currency="CNY", error=None
+    ) -> None:
         self.total = total
         self.fail = fail
         self.currency = currency
+        self.error = error
 
     def get_balance(self):
+        if self.error is not None:
+            raise self.error
         if self.fail:
             raise RuntimeError("live endpoint unavailable")
         return True, (
@@ -203,3 +209,37 @@ def test_unavailable_balance_is_frozen_as_unavailable_not_as_zero_balance() -> N
     assert snapshot.granted_balance == Decimal("0")
     assert snapshot.topped_up_balance == Decimal("0")
     assert report.balance is None
+
+
+def test_immediately_previous_unavailable_snapshot_suppresses_weekly_delta() -> None:
+    unavailable = BalanceSnapshot(
+        provider="deepseek",
+        currency="CNY",
+        total_balance=Decimal("0"),
+        granted_balance=Decimal("0"),
+        topped_up_balance=Decimal("0"),
+        is_available=False,
+        report_week_start=datetime(2026, 8, 23, 21, 0, tzinfo=timezone.utc),
+        report_text="unavailable",
+        captured_at=datetime(2026, 8, 30, 18, 30, tzinfo=timezone.utc),
+    )
+
+    report = UsageReportService(
+        FakeUsageRepository(unavailable), FakeBalanceClient(Decimal("49"))
+    ).prepare_weekly(NOW)
+
+    assert "прошлый баланс не был получен" in report.report_text
+    assert "−49.00 CNY" not in report.report_text
+    assert "примерно 0 недель" not in report.report_text
+
+
+def test_insufficient_balance_is_distinguished_from_temporary_failure() -> None:
+    error = DeepSeekApiError(
+        "DeepSeek insufficient balance", status_code=402
+    )
+
+    report = UsageReportService(
+        FakeUsageRepository(), FakeBalanceClient(error=error)
+    ).prepare_weekly(NOW)
+
+    assert "недостаточно средств" in report.report_text.lower()

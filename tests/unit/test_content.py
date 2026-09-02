@@ -18,6 +18,15 @@ def test_repository_copy_catalog_loads_and_renders() -> None:
         topic_title="Релиз",
         topic_details="Версия согласована.",
     ) == "• Релиз\nВерсия согласована."
+    assert copy.render(
+        "usage_report",
+        "balance",
+        total_balance="49.00",
+        currency="CNY",
+    ) == "Баланс: 49.00 CNY"
+    assert "недостаточно средств" in copy.value(
+        "usage_report", "insufficient_balance"
+    ).lower()
 
 
 def test_content_import_falls_back_to_tomli_when_tomllib_is_unavailable() -> None:

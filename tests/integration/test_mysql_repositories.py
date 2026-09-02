@@ -151,7 +151,7 @@ def test_usage_aggregate_sums_provider_metrics_with_null_safe_sql() -> None:
     assert totals.estimated_cost_microusd == 1_250_000
 
 
-def test_previous_balance_snapshot_is_strictly_before_requested_week_and_available() -> None:
+def test_previous_balance_snapshot_returns_immediately_previous_unavailable_week() -> None:
     captured_at = datetime(2026, 8, 30, 18, 30)
     connection = RecordingConnection(
         fetchone_result={
@@ -160,7 +160,7 @@ def test_previous_balance_snapshot_is_strictly_before_requested_week_and_availab
             "total_balance": Decimal("50.000000"),
             "granted_balance": Decimal("0.000000"),
             "topped_up_balance": Decimal("50.000000"),
-            "is_available": 1,
+            "is_available": 0,
             "report_week_start": datetime(2026, 8, 23, 21, 0),
             "report_text": "old report",
             "captured_at": captured_at,
@@ -175,11 +175,11 @@ def test_previous_balance_snapshot_is_strictly_before_requested_week_and_availab
     assert snapshot.total_balance == Decimal("50.000000")
     sql, params = connection.cursor_instance.executions[0]
     assert "report_week_start < %s" in sql
-    assert "is_available = 1" in sql
+    assert "is_available = 1" not in sql
     assert "ORDER BY report_week_start DESC" in sql
     assert params == ("deepseek", "CNY", week_start.replace(tzinfo=None))
     assert snapshot.captured_at.tzinfo == timezone.utc
-    assert snapshot.is_available is True
+    assert snapshot.is_available is False
     assert snapshot.topped_up_balance == Decimal("50.000000")
 
 

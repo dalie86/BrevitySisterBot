@@ -11,7 +11,14 @@ from app.content import BotCopy  # noqa: E402
 
 COPY_PATH = PROJECT_ROOT / "content" / "bot_copy.ru.toml"
 DECK_PATH = PROJECT_ROOT / "docs" / "BOT_COPY_RU.md"
-SECTION_ORDER = ("messages", "buttons", "summary", "fallback", "prompts")
+SECTION_ORDER = (
+    "messages",
+    "buttons",
+    "summary",
+    "fallback",
+    "prompts",
+    "usage_report",
+)
 
 CONTEXTS = {
     ("messages", "group_commands"): "Пользователь отправляет /start в группе.",
@@ -91,6 +98,18 @@ CONTEXTS = {
     ): "Запрос с сегодняшней перепиской (последние 18 000 символов).",
     ("prompts", "transcript_line"): "Формат одной строки переписки.",
     ("prompts", "repair"): "Одна попытка исправления; первые 6000 символов ответа.",
+    (
+        "usage_report",
+        "weekly_base",
+    ): "Служебный еженедельный отчёт владельцу без данных групп и участников.",
+    (
+        "usage_report",
+        "insufficient_balance",
+    ): "DeepSeek ответил HTTP 402 при проверке баланса.",
+    (
+        "usage_report",
+        "previous_unavailable",
+    ): "Предыдущая недельная проверка баланса была недоступна.",
 }
 
 PREAMBLE = """Этот файл генерируется из `content/bot_copy.ru.toml`. Не редактируйте

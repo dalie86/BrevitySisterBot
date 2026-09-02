@@ -69,6 +69,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     command = arguments[0]
+    if command == "usage-report" and settings.owner_chat_id is None:
+        print("OWNER_CHAT_ID is required for usage-report", file=sys.stderr)
+        return 2
     now = datetime.now(timezone.utc)
     database = MySqlDatabase(settings)
     locks = MySqlJobLockRepository(database.connect)
@@ -105,8 +108,9 @@ def _run_command(
         balance_client = DeepSeekClient(
             settings.deepseek_api_key, settings.deepseek_model
         )
+        copy = BotCopy.load(PROJECT_ROOT / "content" / "bot_copy.ru.toml")
         usage = UsageReportService(
-            MySqlUsageRepository(database.connect), balance_client
+            MySqlUsageRepository(database.connect), balance_client, copy
         )
         if command == "usage":
             return usage.inspect(now)

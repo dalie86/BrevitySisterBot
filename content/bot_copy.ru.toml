@@ -116,3 +116,19 @@ transcript_line = "[{{iso_datetime}}] {{participant_name}}: {{message_text}}"
 # передаются первые 6000 символов ответа
 repair = """Исправь ответ в требуемый JSON без добавления фактов:
 {{invalid_model_response}}"""
+
+[usage_report]
+# Еженедельный служебный отчёт владельцу. Не содержит данные групп и участников.
+weekly_base = """DeepSeek — неделя с {{week_start}}
+Вызовы: {{llm_calls}} (repair: {{repair_calls}})
+Токены — cache hit: {{cache_hit_tokens}}; cache miss: {{cache_miss_tokens}}; output: {{output_tokens}}
+Расход по оценке: {{estimated_cost_usd}} USD"""
+balance = "Баланс: {{total_balance}} {{currency}}"
+temporary_balance_failure = "Баланс недоступен временно; локальная статистика сохранена."
+insufficient_balance = "На балансе DeepSeek недостаточно средств; локальная статистика сохранена."
+first_forecast = "прогноз появится через неделю"
+previous_unavailable = "прошлый баланс не был получен; прогноз расхода недоступен"
+top_up = "Пополнение: +{{delta}} {{currency}}"
+unchanged = "Изменение: 0.00 {{currency}}"
+spend_delta = "Изменение: −{{delta}} {{currency}}"
+runway = "При таком расходе: примерно {{weeks}} недель"
