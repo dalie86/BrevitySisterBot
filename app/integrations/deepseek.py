@@ -12,6 +12,10 @@ from app.domain.models import LlmResult
 from app.services.llm_usage import estimate_flash_cost_microusd
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 class DeepSeekApiError(RuntimeError):
     def __init__(
         self,
@@ -41,7 +45,7 @@ class DeepSeekClient:
         self.timeout_seconds = timeout_seconds
 
     def generate_summary(self, system_prompt: str, user_prompt: str) -> LlmResult:
-        requested_at = datetime.now(timezone.utc)
+        requested_at = _utc_now()
         payload = {
             "model": self.model,
             "messages": [

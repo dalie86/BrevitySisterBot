@@ -100,10 +100,10 @@ class RestartCursor:
             if normalized.startswith("CREATE TABLE"):
                 raise pymysql.err.OperationalError(1050, "Table exists")
             return
-        if self.interrupt_after is not None and self.new_boundaries == self.interrupt_after:
-            raise ConnectionError("simulated migration interruption")
         self.completed.add(normalized)
         self.new_boundaries += 1
+        if self.interrupt_after is not None and self.new_boundaries == self.interrupt_after:
+            raise ConnectionError("simulated migration interruption")
 
 
 class RestartConnection:
@@ -134,7 +134,7 @@ MIGRATION_003_SQL = Path("migrations/003_deepseek_usage.sql").read_text(
 
 
 @pytest.mark.parametrize(
-    "interrupt_after", range(1, len(_split_sql_statements(MIGRATION_002_SQL)))
+    "interrupt_after", range(1, len(_split_sql_statements(MIGRATION_002_SQL)) + 1)
 )
 def test_migration_002_restarts_after_each_original_ddl_boundary(interrupt_after) -> None:
     completed: set[str] = set()
@@ -153,22 +153,66 @@ def test_migration_002_restarts_after_each_original_ddl_boundary(interrupt_after
 
 
 @pytest.mark.parametrize(
-    "interrupt_after", range(1, len(_split_sql_statements(MIGRATION_003_SQL)))
+    "interrupt_after", range(1, len(_split_sql_statements(MIGRATION_003_SQL)) + 1)
 )
-def test_migration_003_restarts_after_each_original_ddl_boundary(interrupt_after) -> None:
+def test_migration_003_restarts_and_records_only_after_verification(
+    interrupt_after: int, tmp_path: Path
+) -> None:
+    migration_path = tmp_path / "003_deepseek_usage.sql"
+    migration_path.write_text(MIGRATION_003_SQL, encoding="utf-8")
     completed: set[str] = set()
-    database = object.__new__(MySqlDatabase)
-    database.connect = lambda: RestartConnection(completed, interrupt_after)  # type: ignore[method-assign]
+    expected = {
+        " ".join(statement.split())
+        for statement in _split_sql_statements(MIGRATION_003_SQL)
+    }
+    runner = object.__new__(MySqlDatabase)
+
+    class RestartableDatabase:
+        def __init__(self) -> None:
+            self.interrupt_after: int | None = interrupt_after
+            self.events: list[str] = []
+            self.applied: dict[str, str] = {}
+
+        def applied_migrations(self):
+            return self.applied
+
+        def execute_script(self, sql, migration_name=None):
+            self.events.append("execute")
+            runner.connect = lambda: RestartConnection(  # type: ignore[method-assign]
+                completed, self.interrupt_after
+            )
+            runner.execute_script(sql, migration_name=migration_name)
+
+        def verify_migration(self, migration_name):
+            self.events.append("verify")
+            assert completed == expected
+            _verify_migration_003_schema(
+                {
+                    ("prepared_summaries", "cache_hit_input_tokens"): "YES",
+                    ("prepared_summaries", "cache_miss_input_tokens"): "YES",
+                    ("prepared_summaries", "llm_call_count"): "YES",
+                    ("prepared_summaries", "estimated_cost_microusd"): "YES",
+                }
+            )
+
+        def record_migration(self, filename, checksum):
+            assert self.events[-1] == "verify"
+            self.events.append("record")
+            self.applied[filename] = checksum
+
+    database = RestartableDatabase()
 
     with pytest.raises(ConnectionError, match="interruption"):
-        database.execute_script(
-            MIGRATION_003_SQL, migration_name="003_deepseek_usage.sql"
-        )
+        apply_migrations(database, tmp_path)
 
-    database.connect = lambda: RestartConnection(completed, None)  # type: ignore[method-assign]
-    database.execute_script(
-        MIGRATION_003_SQL, migration_name="003_deepseek_usage.sql"
-    )
+    assert database.events == ["execute"]
+    assert database.applied == {}
+
+    database.interrupt_after = None
+
+    assert apply_migrations(database, tmp_path) == ["003_deepseek_usage.sql"]
+    assert database.events == ["execute", "execute", "verify", "record"]
+    assert set(database.applied) == {"003_deepseek_usage.sql"}
 
 
 def test_migration_002_propagates_unrelated_sql_error() -> None:

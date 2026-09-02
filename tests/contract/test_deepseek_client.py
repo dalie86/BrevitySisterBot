@@ -1,9 +1,11 @@
 import json
+from datetime import datetime, timezone
 from io import BytesIO
 from urllib.error import HTTPError, URLError
 
 import pytest
 
+from app.integrations import deepseek as deepseek_module
 from app.integrations.deepseek import DeepSeekApiError, DeepSeekClient
 
 
@@ -25,6 +27,13 @@ class FakeResponse:
 
 def test_generate_summary_uses_exact_request_contract_and_returns_usage(monkeypatch) -> None:
     captured = {}
+    clock_calls = []
+
+    def fixed_utc_now():
+        clock_calls.append(True)
+        return datetime(2026, 7, 20, 2, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(deepseek_module, "_utc_now", fixed_utc_now)
 
     def fake_urlopen(request, timeout):
         captured["url"] = request.full_url
@@ -68,7 +77,8 @@ def test_generate_summary_uses_exact_request_contract_and_returns_usage(monkeypa
     assert result.output_tokens == 30
     assert result.cache_hit_input_tokens == 20
     assert result.cache_miss_input_tokens == 100
-    assert result.estimated_cost_microusd >= 0
+    assert result.estimated_cost_microusd == 84
+    assert clock_calls == [True]
     assert result.provider == "deepseek"
     assert result.model == "deepseek-v4-flash-0731"
     assert "secret" not in repr(captured["body"])

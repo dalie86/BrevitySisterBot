@@ -45,7 +45,7 @@ def test_flash_cost_applies_exact_rates_to_each_token_bucket(
 def test_flash_cost_rounds_once_after_summing_all_buckets() -> None:
     instant = datetime(2026, 7, 20, 0, 0, tzinfo=timezone.utc)
 
-    assert estimate_flash_cost_microusd(1, 1, 1, instant) == 1
+    assert estimate_flash_cost_microusd(50, 1, 0, instant) == 1
 
 
 def test_flash_cost_converts_aware_time_to_utc() -> None:
