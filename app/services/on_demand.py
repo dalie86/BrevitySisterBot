@@ -39,12 +39,10 @@ class OnDemandSummaryService:
         requester_user_id: int,
         destination_chat_id: int,
         ack_reply_markup: dict | None = None,
+        send_ack: bool = True,
     ) -> None:
-        self.telegram.send_message(
-            destination_chat_id,
-            self.copy.value("messages", "summary_accepted"),
-            reply_markup=ack_reply_markup,
-        )
+        if send_ack:
+            self.acknowledge(destination_chat_id, ack_reply_markup)
         result = self.summaries.generate(
             chat_id,
             SummaryKind.ON_DEMAND,
@@ -64,6 +62,17 @@ class OnDemandSummaryService:
             )
             return
         self.telegram.send_message(destination_chat_id, result.text, parse_mode="HTML")
+
+    def acknowledge(
+        self,
+        destination_chat_id: int,
+        reply_markup: dict | None = None,
+    ) -> None:
+        self.telegram.send_message(
+            destination_chat_id,
+            self.copy.value("messages", "summary_accepted"),
+            reply_markup=reply_markup,
+        )
 
 
 class OnDemandSummaryHandler:
@@ -261,20 +270,15 @@ class OnDemandSummaryHandler:
         state = _reservation_state(reservation)
         if state in {"unavailable", "finalized"} or reservation.chat_id is None:
             return
-        if not self.chats.is_tracked(reservation.chat_id):
-            self.telegram.send_message(
-                shared.private_chat_id,
-                self.copy.value("messages", "selected_group_not_connected"),
-            )
-        else:
-            self._verify_and_deliver(
-                chat_id=reservation.chat_id,
-                user_id=shared.user_id,
-                username="",
-                full_name="",
-                destination_chat_id=shared.private_chat_id,
-                remove_keyboard=True,
-            )
+        self._verify_and_deliver(
+            chat_id=reservation.chat_id,
+            user_id=shared.user_id,
+            username="",
+            full_name="",
+            destination_chat_id=shared.private_chat_id,
+            remove_keyboard=True,
+            verify_tracked=True,
+        )
         self.share_requests.finalize(
             shared.request_id, shared.user_id, update.update_id, self.now()
         )
@@ -305,7 +309,18 @@ class OnDemandSummaryHandler:
         full_name: str,
         destination_chat_id: int,
         remove_keyboard: bool = False,
+        verify_tracked: bool = False,
     ) -> None:
+        self.requests.acknowledge(
+            destination_chat_id,
+            {"remove_keyboard": True} if remove_keyboard else None,
+        )
+        if verify_tracked and not self.chats.is_tracked(chat_id):
+            self.telegram.send_message(
+                destination_chat_id,
+                self.copy.value("messages", "selected_group_not_connected"),
+            )
+            return
         bot_membership = self.telegram.get_chat_member(chat_id, self.bot_user_id)
         if not bot_membership.is_admin:
             self.telegram.send_message(
@@ -332,7 +347,7 @@ class OnDemandSummaryHandler:
             chat_id=chat_id,
             requester_user_id=user_id,
             destination_chat_id=destination_chat_id,
-            ack_reply_markup={"remove_keyboard": True} if remove_keyboard else None,
+            send_ack=False,
         )
 
     def _record_membership(

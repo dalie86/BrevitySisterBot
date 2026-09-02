@@ -79,6 +79,19 @@ def test_acceptance_can_remove_picker_keyboard() -> None:
     assert telegram.sent[1][2] is None
 
 
+def test_request_without_ack_posts_only_html_result() -> None:
+    service, telegram = make_service()
+
+    service.request(
+        chat_id=-1001,
+        requester_user_id=42,
+        destination_chat_id=42,
+        send_ack=False,
+    )
+
+    assert telegram.sent == [(42, "<b>готовая сводка</b>", None, "HTML")]
+
+
 @pytest.mark.parametrize(
     ("outcome", "copy_key"),
     [

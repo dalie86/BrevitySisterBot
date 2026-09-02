@@ -6,7 +6,13 @@ import pytest
 
 from app.content import BotCopy
 from app.domain.models import GeneratedSummary, SummaryKind, SummaryStatus, TelegramMembership
-from app.integrations.telegram import IncomingCallback, IncomingChatShared, IncomingMessage, IncomingUpdate
+from app.integrations.telegram import (
+    IncomingCallback,
+    IncomingChatShared,
+    IncomingMessage,
+    IncomingUpdate,
+    TelegramApiError,
+)
 from app.services.on_demand import OnDemandSummaryHandler
 from app.services.telegram_effects import DurableTelegramGateway, telegram_update_scope
 
@@ -123,13 +129,20 @@ class Selections:
 class RawTelegram:
     def __init__(self) -> None:
         self.sent = []
+        self.events = []
         self.answered = []
+        self.membership_error_once = False
 
     def send_message(self, chat_id, text, reply_markup=None, parse_mode=None):
         self.sent.append((chat_id, text, reply_markup, parse_mode))
+        self.events.append(("send_message", text))
         return len(self.sent)
 
     def get_chat_member(self, chat_id, user_id):
+        self.events.append(("get_chat_member", chat_id, user_id))
+        if self.membership_error_once:
+            self.membership_error_once = False
+            raise TelegramApiError("temporary")
         if user_id == BOT_USER_ID:
             return TelegramMembership("administrator", True)
         return TelegramMembership("member", True)
@@ -142,11 +155,13 @@ class Effects:
     def __init__(self) -> None:
         self.records = {}
         self.hashes = []
+        self.payload_hash_conflicts = []
 
     def begin(self, effect_key, update_id, method, payload_hash, now):
         self.hashes.append(payload_hash)
         existing = self.records.get(effect_key)
         if existing is not None and existing[2] != payload_hash:
+            self.payload_hash_conflicts.append((effect_key, existing[2], payload_hash))
             raise RuntimeError("Telegram effect payload changed for the same update")
         if existing is not None:
             return existing[:2]
@@ -332,3 +347,33 @@ def test_chat_shared_reservation_blocks_competitor_and_owner_can_retry() -> None
 
     assert summaries.calls == [(-1001, 42), (-1001, 42)]
     assert len(raw.sent) == sent_after_success
+
+
+def test_membership_retry_reuses_private_acknowledgement_effect() -> None:
+    handler, raw, effects, _, selections, _ = make_handler()
+    token = selections.get_or_create(42, -1001, "seed", NOW)
+    raw.membership_error_once = True
+    update = callback(token, 40)
+
+    with pytest.raises(TelegramApiError, match="temporary"):
+        with telegram_update_scope(update.update_id):
+            handler(update)
+    assert [item[1] for item in raw.sent].count(
+        COPY.value("messages", "summary_accepted")
+    ) == 1
+    with telegram_update_scope(update.update_id):
+        handler(update)
+
+    assert [item[1] for item in raw.sent].count(
+        COPY.value("messages", "summary_accepted")
+    ) == 1
+    assert [item[1] for item in raw.sent].count("<b>done</b>") == 1
+    assert len(effects.records) == 2
+    assert effects.payload_hash_conflicts == []
+    assert raw.events == [
+        ("send_message", COPY.value("messages", "summary_accepted")),
+        ("get_chat_member", -1001, BOT_USER_ID),
+        ("get_chat_member", -1001, BOT_USER_ID),
+        ("get_chat_member", -1001, 42),
+        ("send_message", "<b>done</b>"),
+    ]

@@ -34,6 +34,7 @@ class FakeChats:
         self.tracked_group_count = 0
 
     def is_tracked(self, chat_id):
+        self.events.append(("is_tracked", chat_id))
         return chat_id in self.tracked
 
     def tracked_count(self):
@@ -145,6 +146,7 @@ class FakeSelections:
 class FakeTelegram:
     def __init__(self) -> None:
         self.sent = []
+        self.events = []
         self.memberships = {}
         self.membership_calls = []
         self.answered_callbacks = []
@@ -152,10 +154,12 @@ class FakeTelegram:
 
     def send_message(self, chat_id, text, reply_markup=None, parse_mode=None):
         self.sent.append((chat_id, text, reply_markup, parse_mode))
+        self.events.append(("send_message", text))
         return len(self.sent)
 
     def get_chat_member(self, chat_id, user_id):
         self.membership_calls.append((chat_id, user_id))
+        self.events.append(("get_chat_member", chat_id, user_id))
         if self.membership_error is not None:
             raise self.membership_error
         return self.memberships.get((chat_id, user_id), TelegramMembership("left", False))
@@ -218,6 +222,7 @@ def make_handler():
     members = FakeMembers()
     share_requests = FakeShareRequests()
     telegram = FakeTelegram()
+    chats.events = telegram.events
     summaries = FakeSummaryService()
     selections = FakeSelections()
     handler = OnDemandSummaryHandler(
@@ -291,6 +296,11 @@ def test_deep_link_remembers_group_and_immediately_generates() -> None:
 
     assert members.remembered == [(-1001, 42)]
     assert summaries.calls[0][0:3] == (-1001, SummaryKind.ON_DEMAND, 42)
+    assert telegram.events[:3] == [
+        ("send_message", COPY.value("messages", "summary_accepted")),
+        ("get_chat_member", -1001, BOT_USER_ID),
+        ("get_chat_member", -1001, 42),
+    ]
 
 
 def test_invalid_deep_link_shows_error_and_native_picker() -> None:
@@ -344,6 +354,11 @@ def test_one_known_group_is_direct_only_when_it_is_the_only_tracked_group() -> N
     handler(private_message("/summary"))
 
     assert summaries.calls[0][0] == -1001
+    assert telegram.events[:3] == [
+        ("send_message", COPY.value("messages", "summary_accepted")),
+        ("get_chat_member", -1001, BOT_USER_ID),
+        ("get_chat_member", -1001, 42),
+    ]
 
 
 def test_multiple_known_groups_show_buttons_without_membership_calls() -> None:
@@ -371,6 +386,12 @@ def test_valid_chat_shared_removes_keyboard_and_generates() -> None:
 
     assert telegram.sent[0][2] == {"remove_keyboard": True}
     assert telegram.sent[0][1] == COPY.value("messages", "summary_accepted")
+    assert telegram.events[:4] == [
+        ("send_message", COPY.value("messages", "summary_accepted")),
+        ("is_tracked", -1001),
+        ("get_chat_member", -1001, BOT_USER_ID),
+        ("get_chat_member", -1001, 42),
+    ]
     assert members.remembered == [(-1001, 42)]
     assert summaries.calls[0][0] == -1001
 
