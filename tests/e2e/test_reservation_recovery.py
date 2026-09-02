@@ -23,6 +23,9 @@ class Chats:
     def is_tracked(self, chat_id):
         return chat_id in self.tracked
 
+    def tracked_count(self):
+        return len(self.tracked)
+
     def resolve_private_link(self, token):
         return None
 

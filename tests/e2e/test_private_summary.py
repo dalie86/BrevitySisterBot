@@ -31,9 +31,13 @@ class FakeChats:
     def __init__(self) -> None:
         self.private_links: dict[str, tuple[int, str]] = {}
         self.tracked: dict[int, str] = {}
+        self.tracked_group_count = 0
 
     def is_tracked(self, chat_id):
         return chat_id in self.tracked
+
+    def tracked_count(self):
+        return self.tracked_group_count
 
     def resolve_private_link(self, token):
         return self.private_links.get(token)
@@ -142,6 +146,7 @@ class FakeTelegram:
     def __init__(self) -> None:
         self.sent = []
         self.memberships = {}
+        self.membership_calls = []
         self.answered_callbacks = []
         self.membership_error: Exception | None = None
 
@@ -150,6 +155,7 @@ class FakeTelegram:
         return len(self.sent)
 
     def get_chat_member(self, chat_id, user_id):
+        self.membership_calls.append((chat_id, user_id))
         if self.membership_error is not None:
             raise self.membership_error
         return self.memberships.get((chat_id, user_id), TelegramMembership("left", False))
@@ -233,6 +239,49 @@ def allow_group(telegram, chat_id=-1001, user_id=42):
     telegram.memberships[chat_id, BOT_USER_ID] = TelegramMembership("administrator", True)
 
 
+def summary_start_callback():
+    return IncomingUpdate(
+        update_id=3,
+        callback=IncomingCallback(
+            callback_id="summary-start",
+            user_id=42,
+            chat_id=42,
+            data="summary_start",
+        ),
+    )
+
+
+def test_plain_private_start_welcomes_without_generating() -> None:
+    handler, _, _, _, telegram, summaries, _ = make_handler()
+
+    handler(private_message("/start"))
+
+    assert telegram.sent == [
+        (
+            42,
+            COPY.value("messages", "private_welcome"),
+            {
+                "inline_keyboard": [[{
+                    "text": COPY.value("buttons", "start_summary"),
+                    "callback_data": "summary_start",
+                }]]
+            },
+            None,
+        )
+    ]
+    assert summaries.calls == []
+
+
+def test_private_start_button_shows_native_picker_without_known_groups() -> None:
+    handler, _, _, _, telegram, summaries, _ = make_handler()
+
+    handler(summary_start_callback())
+
+    assert telegram.answered_callbacks == ["summary-start"]
+    assert telegram.sent[-1][1] == COPY.value("messages", "choose_group_native")
+    assert summaries.calls == []
+
+
 def test_deep_link_remembers_group_and_immediately_generates() -> None:
     handler, chats, members, _, telegram, summaries, _ = make_handler()
     chats.private_links["a" * 32] = (-1001, "Demo")
@@ -272,6 +321,44 @@ def test_no_known_groups_shows_native_picker() -> None:
     assert telegram.sent[-1][2]["resize_keyboard"] is True
     assert telegram.sent[-1][2]["one_time_keyboard"] is True
     assert summaries.calls == []
+
+
+def test_one_known_group_uses_native_picker_when_another_group_is_tracked() -> None:
+    handler, chats, members, _, telegram, summaries, _ = make_handler()
+    chats.tracked_group_count = 2
+    members.groups = [(-1001, "One")]
+
+    handler(private_message("/summary"))
+
+    assert telegram.sent[-1][1] == COPY.value("messages", "choose_group_native")
+    assert telegram.membership_calls == []
+    assert summaries.calls == []
+
+
+def test_one_known_group_is_direct_only_when_it_is_the_only_tracked_group() -> None:
+    handler, chats, members, _, telegram, summaries, _ = make_handler()
+    chats.tracked_group_count = 1
+    members.groups = [(-1001, "One")]
+    allow_group(telegram)
+
+    handler(private_message("/summary"))
+
+    assert summaries.calls[0][0] == -1001
+
+
+def test_multiple_known_groups_show_buttons_without_membership_calls() -> None:
+    handler, chats, members, _, telegram, summaries, selections = make_handler()
+    chats.tracked_group_count = 2
+    members.groups = [(-1001, "One"), (-1002, "Two")]
+
+    handler(private_message("/summary"))
+
+    buttons = [row[0] for row in telegram.sent[-1][2]["inline_keyboard"]]
+    assert [button["text"] for button in buttons] == ["One", "Two"]
+    assert all(button["callback_data"].startswith("summary_group:opaque-") for button in buttons)
+    assert telegram.membership_calls == []
+    assert summaries.calls == []
+    assert selections.counter == 2
 
 
 def test_valid_chat_shared_removes_keyboard_and_generates() -> None:
@@ -363,25 +450,9 @@ def test_invalid_chat_shared_selection_uses_exact_copy(
     assert summaries.calls == []
 
 
-def test_known_groups_are_rechecked_before_delivery() -> None:
-    handler, _, members, _, telegram, summaries, _ = make_handler()
-    members.groups = [(-1001, "Visible"), (-1002, "Departed")]
-    allow_group(telegram, -1001)
-    telegram.memberships[-1002, 42] = TelegramMembership("left", False)
-    telegram.memberships[-1002, BOT_USER_ID] = TelegramMembership("administrator", True)
-
-    handler(private_message("/summary"))
-
-    assert summaries.calls[0][0] == -1001
-    assert all("Departed" not in sent[1] for sent in telegram.sent)
-    assert (-1002, 42, "left", False) in members.memberships
-
-
 def test_multiple_valid_groups_show_opaque_buttons() -> None:
     handler, _, members, _, telegram, summaries, selections = make_handler()
     members.groups = [(-1001, "Group 1"), (-1002, "Group 2")]
-    allow_group(telegram, -1001)
-    allow_group(telegram, -1002)
 
     handler(private_message("/summary"))
 
@@ -391,6 +462,7 @@ def test_multiple_valid_groups_show_opaque_buttons() -> None:
     assert all(button["callback_data"].startswith("summary_group:opaque-") for button in buttons)
     assert all("-100" not in button["callback_data"] for button in buttons)
     assert selections.counter == 2
+    assert telegram.membership_calls == []
     assert summaries.calls == []
 
 
@@ -439,7 +511,8 @@ def test_callback_selection_is_consumed_once() -> None:
 
 
 def test_telegram_membership_failures_propagate() -> None:
-    handler, _, members, _, telegram, _, _ = make_handler()
+    handler, chats, members, _, telegram, _, _ = make_handler()
+    chats.tracked_group_count = 1
     members.groups = [(-1001, "Demo")]
     telegram.membership_error = TelegramApiError("temporary")
 

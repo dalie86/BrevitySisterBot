@@ -125,7 +125,22 @@ class OnDemandSummaryHandler:
             )
             return
 
-        if _command_name(message.text) != "/summary":
+        command = _command_name(message.text)
+        if command == "/start":
+            self.telegram.send_message(
+                message.chat_id,
+                self.copy.value("messages", "private_welcome"),
+                reply_markup={
+                    "inline_keyboard": [[
+                        {
+                            "text": self.copy.value("buttons", "start_summary"),
+                            "callback_data": "summary_start",
+                        }
+                    ]]
+                },
+            )
+            return
+        if command != "/summary":
             return
         self._handle_private_summary(
             update_id=update.update_id,
@@ -144,15 +159,13 @@ class OnDemandSummaryHandler:
         full_name: str,
         destination_chat_id: int,
     ) -> None:
-        groups = [
-            group
-            for group in self.members.linked_groups(user_id)
-            if self._group_is_accessible(group[0], user_id)
-        ]
-        if not groups:
-            self._show_picker(update_id, user_id, destination_chat_id)
+        groups = list(self.members.linked_groups(user_id))
+        if len(groups) >= 2:
+            self._show_known_group_buttons(
+                update_id, user_id, destination_chat_id, groups
+            )
             return
-        if len(groups) == 1:
+        if len(groups) == 1 and self.chats.tracked_count() == 1:
             self._verify_and_deliver(
                 chat_id=groups[0][0],
                 user_id=user_id,
@@ -161,6 +174,16 @@ class OnDemandSummaryHandler:
                 destination_chat_id=destination_chat_id,
             )
             return
+
+        self._show_picker(update_id, user_id, destination_chat_id)
+
+    def _show_known_group_buttons(
+        self,
+        update_id: int,
+        user_id: int,
+        destination_chat_id: int,
+        groups: list[tuple[int, str]],
+    ) -> None:
 
         buttons = []
         current = self.now()
@@ -187,7 +210,19 @@ class OnDemandSummaryHandler:
 
     def _handle_callback(self, update: IncomingUpdate) -> None:
         callback = update.callback
-        if callback is None or not callback.data.startswith("summary_group:"):
+        if callback is None:
+            return
+        if callback.data == "summary_start":
+            self.telegram.answer_callback_query(callback.callback_id)
+            self._handle_private_summary(
+                update_id=update.update_id,
+                user_id=callback.user_id,
+                username="",
+                full_name="",
+                destination_chat_id=callback.chat_id,
+            )
+            return
+        if not callback.data.startswith("summary_group:"):
             return
         token = callback.data.removeprefix("summary_group:")
         reservation = self.selections.reserve(
@@ -260,12 +295,6 @@ class OnDemandSummaryHandler:
                 self.copy.value("buttons", "choose_group"),
             ),
         )
-
-    def _group_is_accessible(self, chat_id: int, user_id: int) -> bool:
-        bot_membership = self.telegram.get_chat_member(chat_id, self.bot_user_id)
-        user_membership = self.telegram.get_chat_member(chat_id, user_id)
-        self._record_membership(chat_id, user_id, user_membership)
-        return bot_membership.is_admin and _membership_allowed(user_membership)
 
     def _verify_and_deliver(
         self,
