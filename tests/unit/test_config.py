@@ -14,7 +14,7 @@ def test_load_settings_uses_production_defaults() -> None:
             "DB_NAME": "brevity",
             "DB_USER": "brevity",
             "DB_PASSWORD": "password",
-            "DEEPSEEK_API_KEY": "deepseek",
+            "DEEPSEEK_API_KEY": "repr-super-secret",
             "DEEPSEEK_MODEL": "deepseek-v4-flash",
         }
     )
@@ -27,6 +27,7 @@ def test_load_settings_uses_production_defaults() -> None:
     assert settings.automatic_min_messages == 15
     assert settings.on_demand_min_messages == 5
     assert settings.archive_retention_days == 30
+    assert "repr-super-secret" not in repr(settings)
 
 
 def test_load_settings_reports_all_missing_required_values() -> None:

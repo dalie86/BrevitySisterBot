@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Mapping
 
 
@@ -15,7 +15,7 @@ class Settings:
     db_name: str
     db_user: str
     db_password: str
-    deepseek_api_key: str
+    deepseek_api_key: str = field(repr=False)
     deepseek_model: str = "deepseek-v4-flash"
     timezone: str = "Europe/Moscow"
     owner_chat_id: int | None = None

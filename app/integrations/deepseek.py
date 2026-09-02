@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import time
 import urllib.error
@@ -31,6 +32,8 @@ class DeepSeekClient:
         model: str = "deepseek-v4-flash",
         timeout_seconds: float = 90.0,
     ) -> None:
+        if not api_key or any(not 0x21 <= ord(character) <= 0x7E for character in api_key):
+            raise DeepSeekApiError("DeepSeek invalid API key")
         self.api_key = api_key
         self.model = model
         self.timeout_seconds = timeout_seconds
@@ -48,18 +51,18 @@ class DeepSeekClient:
             "response_format": {"type": "json_object"},
             "stream": False,
         }
-        request = urllib.request.Request(
-            self.endpoint,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            method="POST",
-        )
         started = time.monotonic()
         try:
+            request = urllib.request.Request(
+                self.endpoint,
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                method="POST",
+            )
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
                 raw_body = response.read().decode("utf-8").strip()
                 body = json.loads(raw_body)
@@ -69,12 +72,10 @@ class DeepSeekClient:
                 status_code=exc.code,
                 retry_after_seconds=_retry_after_seconds(exc.headers),
             ) from None
-        except (urllib.error.URLError, TimeoutError) as exc:
-            raise DeepSeekApiError(
-                f"DeepSeek request failed: {type(exc).__name__}"
-            ) from None
         except (json.JSONDecodeError, UnicodeDecodeError):
             raise DeepSeekApiError("DeepSeek returned malformed JSON") from None
+        except (OSError, ValueError, http.client.HTTPException):
+            raise DeepSeekApiError("DeepSeek request failed") from None
 
         content = _extract_content(body)
         usage = body.get("usage") if isinstance(body, dict) else {}
@@ -121,7 +122,14 @@ def _http_error_message(error: urllib.error.HTTPError, api_key: str) -> str:
     try:
         payload = json.loads(error.read().decode("utf-8").strip())
         message = payload.get("error", {}).get("message")
-    except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+    except (
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+        AttributeError,
+        OSError,
+        ValueError,
+        http.client.HTTPException,
+    ):
         message = None
     safe_message = str(message or f"DeepSeek HTTP error {error.code}")
     return safe_message.replace(api_key, "[redacted]") if api_key else safe_message

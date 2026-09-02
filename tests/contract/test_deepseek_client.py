@@ -136,6 +136,96 @@ def test_network_error_is_normalized_without_api_key(monkeypatch) -> None:
     assert "super-secret" not in str(raised.value)
 
 
+def test_newline_api_key_is_rejected_before_opening_request(monkeypatch) -> None:
+    opened = False
+
+    def fake_urlopen(request, timeout):
+        nonlocal opened
+        opened = True
+        return FakeResponse({"choices": [{"message": {"content": "{}"}}]})
+
+    monkeypatch.setattr(
+        "app.integrations.deepseek.urllib.request.urlopen",
+        fake_urlopen,
+    )
+
+    with pytest.raises(DeepSeekApiError, match="invalid API key") as raised:
+        DeepSeekClient("line-one\nline-two").generate_summary("system", "user")
+
+    assert opened is False
+    assert "line-one" not in str(raised.value)
+    assert "line-two" not in str(raised.value)
+
+
+def test_open_time_value_error_is_normalized_without_api_key(monkeypatch) -> None:
+    api_key = "open-super-secret"
+    monkeypatch.setattr(
+        "app.integrations.deepseek.urllib.request.urlopen",
+        lambda request, timeout: (_ for _ in ()).throw(
+            ValueError(f"Invalid header value containing Bearer {api_key}")
+        ),
+    )
+
+    with pytest.raises(DeepSeekApiError, match="request failed") as raised:
+        DeepSeekClient(api_key).generate_summary("system", "user")
+
+    assert api_key not in str(raised.value)
+
+
+def test_read_time_error_is_normalized_without_api_key(monkeypatch) -> None:
+    api_key = "read-super-secret"
+
+    class FailingResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback) -> None:
+            return None
+
+        def read(self) -> bytes:
+            raise OSError(f"socket read failed for Bearer {api_key}")
+
+    monkeypatch.setattr(
+        "app.integrations.deepseek.urllib.request.urlopen",
+        lambda request, timeout: FailingResponse(),
+    )
+
+    with pytest.raises(DeepSeekApiError, match="request failed") as raised:
+        DeepSeekClient(api_key).generate_summary("system", "user")
+
+    assert api_key not in str(raised.value)
+
+
+def test_http_error_read_failure_is_normalized_without_api_key(monkeypatch) -> None:
+    api_key = "http-read-super-secret"
+
+    class FailingBody:
+        def read(self, size=-1) -> bytes:
+            raise ValueError(f"failed to read error for Bearer {api_key}")
+
+        def close(self) -> None:
+            return None
+
+    error = HTTPError(
+        url="https://api.deepseek.com/chat/completions",
+        code=503,
+        msg="Service Unavailable",
+        hdrs={"Retry-After": "4"},
+        fp=FailingBody(),
+    )
+    monkeypatch.setattr(
+        "app.integrations.deepseek.urllib.request.urlopen",
+        lambda request, timeout: (_ for _ in ()).throw(error),
+    )
+
+    with pytest.raises(DeepSeekApiError, match="DeepSeek HTTP error 503") as raised:
+        DeepSeekClient(api_key).generate_summary("system", "user")
+
+    assert raised.value.status_code == 503
+    assert raised.value.retry_after_seconds == 4
+    assert api_key not in str(raised.value)
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [
