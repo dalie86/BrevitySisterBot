@@ -65,3 +65,30 @@ def test_check_rejects_a_non_object_response(monkeypatch, capsys) -> None:
 
     assert check_deepseek.main() == 1
     assert capsys.readouterr().err == "DeepSeek check returned invalid JSON object\n"
+
+
+def test_check_rejects_an_object_without_the_requested_ok_signal(monkeypatch, capsys) -> None:
+    settings = SimpleNamespace(
+        deepseek_api_key="super-secret",
+        deepseek_model="deepseek-v4-flash",
+    )
+    monkeypatch.setattr(check_deepseek, "load_settings", lambda: settings)
+
+    class FakeClient:
+        def generate_summary(self, system_prompt, user_prompt):
+            return SimpleNamespace(
+                content='{"ok": false}',
+                provider="deepseek",
+                model="deepseek-v4-flash",
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+    monkeypatch.setattr(
+        check_deepseek,
+        "DeepSeekClient",
+        lambda api_key, model: FakeClient(),
+    )
+
+    assert check_deepseek.main() == 1
+    assert capsys.readouterr().err == "DeepSeek check returned invalid JSON object\n"

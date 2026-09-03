@@ -23,7 +23,7 @@ def main() -> int:
         payload = json.loads(result.content)
     except (json.JSONDecodeError, TypeError):
         payload = None
-    if not isinstance(payload, dict):
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
         print("DeepSeek check returned invalid JSON object", file=sys.stderr)
         return 1
     print(
