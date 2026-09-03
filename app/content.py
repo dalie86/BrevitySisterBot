@@ -65,6 +65,7 @@ STATIC_KEYS = {
 } | {
     ("buttons", "get_private_summary"),
     ("buttons", "choose_group"),
+    ("buttons", "start_summary"),
     ("summary", "topics_separator"),
     ("fallback", "participants_unknown"),
     ("fallback", "messages_separator"),

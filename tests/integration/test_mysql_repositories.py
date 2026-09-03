@@ -169,15 +169,16 @@ def test_previous_balance_snapshot_returns_immediately_previous_unavailable_week
     repository = MySqlUsageRepository(lambda: connection)
     week_start = datetime(2026, 8, 30, 21, 0, tzinfo=timezone.utc)
 
-    snapshot = repository.previous_snapshot("deepseek", "CNY", week_start)
+    snapshot = repository.previous_snapshot("deepseek", week_start)
 
     assert snapshot is not None
     assert snapshot.total_balance == Decimal("50.000000")
     sql, params = connection.cursor_instance.executions[0]
     assert "report_week_start < %s" in sql
+    assert "currency = %s" not in sql
     assert "is_available = 1" not in sql
     assert "ORDER BY report_week_start DESC" in sql
-    assert params == ("deepseek", "CNY", week_start.replace(tzinfo=None))
+    assert params == ("deepseek", week_start.replace(tzinfo=None))
     assert snapshot.captured_at.tzinfo == timezone.utc
     assert snapshot.is_available is False
     assert snapshot.topped_up_balance == Decimal("50.000000")
@@ -222,9 +223,9 @@ def test_get_or_create_snapshot_uses_insert_ignore_then_returns_frozen_text() ->
     assert "UPDATE" not in insert_sql.upper()
     assert insert_params[7] == "changed retry report"
     assert "SELECT" in select_sql
+    assert "currency = %s" not in select_sql
     assert select_params == (
         "deepseek",
-        "CNY",
         datetime(2026, 8, 30, 21, 0),
     )
     assert connection.commits == 1

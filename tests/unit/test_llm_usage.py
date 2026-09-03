@@ -16,10 +16,11 @@ from app.services.llm_usage import estimate_flash_cost_microusd
         (datetime(2026, 7, 20, 6, 0, tzinfo=timezone.utc), 440),
         (datetime(2026, 7, 20, 9, 59, 59, tzinfo=timezone.utc), 440),
         (datetime(2026, 7, 20, 10, 0, tzinfo=timezone.utc), 220),
-        (datetime(2026, 7, 19, 2, 0, tzinfo=timezone.utc), 440),
+        (datetime(2026, 7, 18, 2, 0, tzinfo=timezone.utc), 220),
+        (datetime(2026, 7, 19, 2, 0, tzinfo=timezone.utc), 220),
     ],
 )
-def test_flash_cost_uses_utc_half_open_peak_ranges(
+def test_flash_cost_uses_weekday_utc_half_open_peak_ranges(
     instant: datetime, expected_microusd: int
 ) -> None:
     assert estimate_flash_cost_microusd(0, 1000, 0, instant) == expected_microusd

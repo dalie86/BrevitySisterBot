@@ -213,6 +213,29 @@ def test_missing_cache_miss_usage_is_derived_from_prompt_and_hit_tokens(
     assert result.cache_miss_input_tokens == 90
 
 
+@pytest.mark.parametrize("raw_value", ["120", 120.5, True, -1])
+def test_generate_summary_does_not_coerce_invalid_raw_token_counts(
+    monkeypatch, raw_value
+) -> None:
+    monkeypatch.setattr(
+        "app.integrations.deepseek.urllib.request.urlopen",
+        lambda request, timeout: FakeResponse(
+            {
+                "choices": [{"message": {"content": "{}"}}],
+                "usage": {
+                    "prompt_tokens": raw_value,
+                    "completion_tokens": 10,
+                },
+            }
+        ),
+    )
+
+    result = DeepSeekClient("secret").generate_summary("system", "user")
+
+    assert result.input_tokens is None
+    assert result.output_tokens == 10
+
+
 @pytest.mark.parametrize("status_code", [400, 401, 402, 422, 429, 500, 503])
 def test_http_errors_preserve_status_and_retry_after_without_api_key(
     monkeypatch, status_code

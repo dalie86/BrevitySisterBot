@@ -124,7 +124,16 @@ def _run_command(
         )
         weekly_update_id = -int(frozen.week_start.strftime("%Y%m%d"))
         with telegram_update_scope(weekly_update_id):
-            telegram.send_message(settings.owner_chat_id, frozen.report_text)
+            telegram_message_id = telegram.send_message(
+                settings.owner_chat_id, frozen.report_text
+            )
+        if telegram_message_id == 0:
+            return {
+                "command": "usage-report",
+                "healthy": False,
+                "status": "unresolved",
+                "week_start": frozen.week_start.isoformat(),
+            }
         return {
             "command": "usage-report",
             "status": "sent",

@@ -223,7 +223,7 @@ class UsageRepository(Protocol):
         raise NotImplementedError
 
     def previous_snapshot(
-        self, provider: str, currency: str, week_start: datetime
+        self, provider: str, week_start: datetime
     ) -> BalanceSnapshot | None:
         raise NotImplementedError
 

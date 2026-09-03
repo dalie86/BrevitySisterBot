@@ -67,18 +67,40 @@ def test_deepseek_usage_migration_is_additive_and_preserves_old_rows() -> None:
     assert len(statements) == 5
     snapshot_sql = statements[4]
     assert snapshot_sql.startswith("CREATE TABLE IF NOT EXISTS llm_balance_snapshots")
+    assert "id BIGINT AUTO_INCREMENT PRIMARY KEY" in snapshot_sql
+    assert "snapshot_id" not in snapshot_sql
+    assert "provider VARCHAR(32) NOT NULL" in snapshot_sql
+    assert "currency VARCHAR(8) NOT NULL" in snapshot_sql
     assert "granted_balance DECIMAL(18, 6) NOT NULL" in snapshot_sql
     assert "topped_up_balance DECIMAL(18, 6) NOT NULL" in snapshot_sql
     assert "is_available TINYINT(1) NOT NULL" in snapshot_sql
     assert "captured_at DATETIME(6) NOT NULL" in snapshot_sql
+    # Moscow Monday midnight is persisted as a precise UTC Sunday 21:00 instant;
+    # DATE would lose the local-week identity used by repository equality reads.
+    assert "report_week_start DATETIME(6) NOT NULL" in snapshot_sql
     assert "report_text TEXT NOT NULL" in snapshot_sql
     assert (
         "UNIQUE KEY uq_llm_balance_report_week "
-        "(provider, currency, report_week_start)"
+        "(provider, report_week_start)"
     ) in snapshot_sql
     assert "CHARSET=utf8mb4" in snapshot_sql
     assert "UPDATE " not in sql.upper()
     assert "DELETE " not in sql.upper()
+
+
+def test_deepseek_schema_design_documents_precise_local_week_identity() -> None:
+    design = Path(
+        "docs/superpowers/specs/2026-09-02-deepseek-integration-0.3.0-design.md"
+    ).read_text(encoding="utf-8")
+    snapshot_schema = design.split("Добавляется таблица `llm_balance_snapshots`:", 1)[
+        1
+    ].split("```", 2)[1]
+
+    assert "report_week_start DATETIME(6)" in snapshot_schema
+    assert "UNIQUE KEY (provider, report_week_start)" in snapshot_schema
+    assert "понедельник 00:00 по Москве" in design
+    assert "воскресенье 21:00 UTC" in design
+    assert "DATE" in design
 
 
 def test_migration_files_are_sorted_and_only_include_sql(tmp_path: Path) -> None:
@@ -146,6 +168,77 @@ MIGRATION_003_SQL = Path("migrations/003_deepseek_usage.sql").read_text(
     encoding="utf-8"
 )
 
+MIGRATION_003_COLUMNS = {
+    ("prepared_summaries", "cache_hit_input_tokens"): "YES",
+    ("prepared_summaries", "cache_miss_input_tokens"): "YES",
+    ("prepared_summaries", "llm_call_count"): "YES",
+    ("prepared_summaries", "estimated_cost_microusd"): "YES",
+    ("llm_balance_snapshots", "id"): "NO",
+    ("llm_balance_snapshots", "provider"): "NO",
+    ("llm_balance_snapshots", "currency"): "NO",
+    ("llm_balance_snapshots", "total_balance"): "NO",
+    ("llm_balance_snapshots", "report_week_start"): "NO",
+    ("llm_balance_snapshots", "report_text"): "NO",
+    ("llm_balance_snapshots", "granted_balance"): "NO",
+    ("llm_balance_snapshots", "topped_up_balance"): "NO",
+    ("llm_balance_snapshots", "is_available"): "NO",
+    ("llm_balance_snapshots", "captured_at"): "NO",
+}
+MIGRATION_003_COLUMN_DETAILS = {
+    ("prepared_summaries", "cache_hit_input_tokens"): {"data_type": "int"},
+    ("prepared_summaries", "cache_miss_input_tokens"): {"data_type": "int"},
+    ("prepared_summaries", "llm_call_count"): {"data_type": "int"},
+    ("prepared_summaries", "estimated_cost_microusd"): {"data_type": "bigint"},
+    ("llm_balance_snapshots", "id"): {
+        "data_type": "bigint",
+        "extra": "auto_increment",
+    },
+    ("llm_balance_snapshots", "provider"): {
+        "data_type": "varchar",
+        "character_maximum_length": 32,
+    },
+    ("llm_balance_snapshots", "currency"): {
+        "data_type": "varchar",
+        "character_maximum_length": 8,
+    },
+    ("llm_balance_snapshots", "total_balance"): {
+        "data_type": "decimal",
+        "numeric_precision": 18,
+        "numeric_scale": 6,
+    },
+    ("llm_balance_snapshots", "report_week_start"): {
+        "data_type": "datetime",
+        "datetime_precision": 6,
+    },
+    ("llm_balance_snapshots", "report_text"): {"data_type": "text"},
+    ("llm_balance_snapshots", "granted_balance"): {
+        "data_type": "decimal",
+        "numeric_precision": 18,
+        "numeric_scale": 6,
+    },
+    ("llm_balance_snapshots", "topped_up_balance"): {
+        "data_type": "decimal",
+        "numeric_precision": 18,
+        "numeric_scale": 6,
+    },
+    ("llm_balance_snapshots", "is_available"): {"data_type": "tinyint"},
+    ("llm_balance_snapshots", "captured_at"): {
+        "data_type": "datetime",
+        "datetime_precision": 6,
+    },
+}
+MIGRATION_003_INDEXES = {
+    ("llm_balance_snapshots", "PRIMARY"): 0,
+    ("llm_balance_snapshots", "uq_llm_balance_report_week"): 0,
+}
+MIGRATION_003_INDEX_COLUMNS = {
+    ("llm_balance_snapshots", "PRIMARY"): ("id",),
+    ("llm_balance_snapshots", "uq_llm_balance_report_week"): (
+        "provider",
+        "report_week_start",
+    ),
+}
+
 
 @pytest.mark.parametrize(
     "interrupt_after", range(1, len(_split_sql_statements(MIGRATION_002_SQL)) + 1)
@@ -201,26 +294,10 @@ def test_migration_003_restarts_and_records_only_after_verification(
             self.events.append("verify")
             assert completed == expected
             _verify_migration_003_schema(
-                {
-                    ("prepared_summaries", "cache_hit_input_tokens"): "YES",
-                    ("prepared_summaries", "cache_miss_input_tokens"): "YES",
-                    ("prepared_summaries", "llm_call_count"): "YES",
-                    ("prepared_summaries", "estimated_cost_microusd"): "YES",
-                    ("llm_balance_snapshots", "snapshot_id"): "NO",
-                    ("llm_balance_snapshots", "provider"): "NO",
-                    ("llm_balance_snapshots", "currency"): "NO",
-                    ("llm_balance_snapshots", "total_balance"): "NO",
-                    ("llm_balance_snapshots", "report_week_start"): "NO",
-                    ("llm_balance_snapshots", "report_text"): "NO",
-                    ("llm_balance_snapshots", "granted_balance"): "NO",
-                    ("llm_balance_snapshots", "topped_up_balance"): "NO",
-                    ("llm_balance_snapshots", "is_available"): "NO",
-                    ("llm_balance_snapshots", "captured_at"): "NO",
-                },
-                {
-                    ("llm_balance_snapshots", "PRIMARY"): 0,
-                    ("llm_balance_snapshots", "uq_llm_balance_report_week"): 0,
-                },
+                MIGRATION_003_COLUMNS,
+                MIGRATION_003_INDEXES,
+                MIGRATION_003_INDEX_COLUMNS,
+                MIGRATION_003_COLUMN_DETAILS,
             )
 
         def record_migration(self, filename, checksum):
@@ -303,54 +380,86 @@ def test_migration_002_schema_verification_rejects_missing_postcondition() -> No
 
 def test_migration_003_schema_verification_rejects_missing_postcondition() -> None:
     with pytest.raises(RuntimeError, match="cache_hit_input_tokens"):
-        _verify_migration_003_schema({}, {})
+        _verify_migration_003_schema({}, {}, {}, {})
 
 
-def test_migration_003_schema_verification_accepts_all_nullable_columns() -> None:
+def test_migration_003_schema_verification_accepts_all_postconditions() -> None:
     _verify_migration_003_schema(
-        {
-            ("prepared_summaries", "cache_hit_input_tokens"): "YES",
-            ("prepared_summaries", "cache_miss_input_tokens"): "YES",
-            ("prepared_summaries", "llm_call_count"): "YES",
-            ("prepared_summaries", "estimated_cost_microusd"): "YES",
-            ("llm_balance_snapshots", "snapshot_id"): "NO",
-            ("llm_balance_snapshots", "provider"): "NO",
-            ("llm_balance_snapshots", "currency"): "NO",
-            ("llm_balance_snapshots", "total_balance"): "NO",
-            ("llm_balance_snapshots", "report_week_start"): "NO",
-            ("llm_balance_snapshots", "report_text"): "NO",
-            ("llm_balance_snapshots", "granted_balance"): "NO",
-            ("llm_balance_snapshots", "topped_up_balance"): "NO",
-            ("llm_balance_snapshots", "is_available"): "NO",
-            ("llm_balance_snapshots", "captured_at"): "NO",
-        },
-        {
-            ("llm_balance_snapshots", "PRIMARY"): 0,
-            ("llm_balance_snapshots", "uq_llm_balance_report_week"): 0,
-        },
+        MIGRATION_003_COLUMNS,
+        MIGRATION_003_INDEXES,
+        MIGRATION_003_INDEX_COLUMNS,
+        MIGRATION_003_COLUMN_DETAILS,
     )
 
 
 def test_migration_003_schema_verification_rejects_missing_weekly_unique_key() -> None:
-    columns = {
-        ("prepared_summaries", "cache_hit_input_tokens"): "YES",
-        ("prepared_summaries", "cache_miss_input_tokens"): "YES",
-        ("prepared_summaries", "llm_call_count"): "YES",
-        ("prepared_summaries", "estimated_cost_microusd"): "YES",
-        ("llm_balance_snapshots", "snapshot_id"): "NO",
-        ("llm_balance_snapshots", "provider"): "NO",
-        ("llm_balance_snapshots", "currency"): "NO",
-        ("llm_balance_snapshots", "total_balance"): "NO",
-        ("llm_balance_snapshots", "report_week_start"): "NO",
-        ("llm_balance_snapshots", "report_text"): "NO",
-        ("llm_balance_snapshots", "granted_balance"): "NO",
-        ("llm_balance_snapshots", "topped_up_balance"): "NO",
-        ("llm_balance_snapshots", "is_available"): "NO",
-        ("llm_balance_snapshots", "captured_at"): "NO",
-    }
-
     with pytest.raises(RuntimeError, match="uq_llm_balance_report_week"):
-        _verify_migration_003_schema(columns, {})
+        _verify_migration_003_schema(
+            MIGRATION_003_COLUMNS,
+            {},
+            {},
+            MIGRATION_003_COLUMN_DETAILS,
+        )
+
+
+def test_migration_003_schema_verification_rejects_currency_in_weekly_identity() -> None:
+    wrong_columns = dict(MIGRATION_003_INDEX_COLUMNS)
+    wrong_columns[("llm_balance_snapshots", "uq_llm_balance_report_week")] = (
+        "provider",
+        "currency",
+        "report_week_start",
+    )
+
+    with pytest.raises(RuntimeError, match="uq_llm_balance_report_week columns"):
+        _verify_migration_003_schema(
+            MIGRATION_003_COLUMNS,
+            MIGRATION_003_INDEXES,
+            wrong_columns,
+            MIGRATION_003_COLUMN_DETAILS,
+        )
+
+
+@pytest.mark.parametrize(
+    ("column", "attribute", "wrong_value"),
+    [
+        (("llm_balance_snapshots", "provider"), "character_maximum_length", 64),
+        (("llm_balance_snapshots", "currency"), "character_maximum_length", 16),
+        (("llm_balance_snapshots", "report_week_start"), "data_type", "date"),
+        (("llm_balance_snapshots", "total_balance"), "numeric_scale", 2),
+    ],
+)
+def test_migration_003_schema_verification_rejects_wrong_column_details(
+    column, attribute, wrong_value
+) -> None:
+    wrong_details = {
+        key: dict(details) for key, details in MIGRATION_003_COLUMN_DETAILS.items()
+    }
+    wrong_details[column][attribute] = wrong_value
+
+    with pytest.raises(
+        RuntimeError, match=f"{column[0]}\\.{column[1]} {attribute}"
+    ):
+        _verify_migration_003_schema(
+            MIGRATION_003_COLUMNS,
+            MIGRATION_003_INDEXES,
+            MIGRATION_003_INDEX_COLUMNS,
+            wrong_details,
+        )
+
+
+def test_migration_003_schema_verification_requires_auto_increment_id() -> None:
+    wrong_details = {
+        key: dict(details) for key, details in MIGRATION_003_COLUMN_DETAILS.items()
+    }
+    wrong_details[("llm_balance_snapshots", "id")]["extra"] = ""
+
+    with pytest.raises(RuntimeError, match="llm_balance_snapshots.id extra"):
+        _verify_migration_003_schema(
+            MIGRATION_003_COLUMNS,
+            MIGRATION_003_INDEXES,
+            MIGRATION_003_INDEX_COLUMNS,
+            wrong_details,
+        )
 
 
 def test_migration_003_verifies_schema_before_recording_checksum(tmp_path: Path) -> None:

@@ -133,7 +133,9 @@ class MySqlDatabase:
                 if filename == "003_deepseek_usage.sql":
                     cursor.execute(
                         """
-                        SELECT table_name, column_name, is_nullable
+                        SELECT table_name, column_name, is_nullable, data_type,
+                               character_maximum_length, numeric_precision,
+                               numeric_scale, datetime_precision, extra
                         FROM information_schema.columns
                         WHERE table_schema = DATABASE()
                           AND table_name IN (
@@ -141,27 +143,66 @@ class MySqlDatabase:
                           )
                         """
                     )
+                    column_rows = cursor.fetchall()
                     columns = {
                         (str(row["table_name"]), str(row["column_name"])): str(
                             row["is_nullable"]
                         )
-                        for row in cursor.fetchall()
+                        for row in column_rows
+                    }
+                    column_details = {
+                        (str(row["table_name"]), str(row["column_name"])): {
+                            "data_type": str(row["data_type"]).lower(),
+                            "character_maximum_length": _metadata_int(
+                                row["character_maximum_length"]
+                            ),
+                            "numeric_precision": _metadata_int(
+                                row["numeric_precision"]
+                            ),
+                            "numeric_scale": _metadata_int(row["numeric_scale"]),
+                            "datetime_precision": _metadata_int(
+                                row["datetime_precision"]
+                            ),
+                            "extra": str(row["extra"]).lower(),
+                        }
+                        for row in column_rows
                     }
                     cursor.execute(
                         """
-                        SELECT table_name, index_name, non_unique
+                        SELECT table_name, index_name, non_unique,
+                               column_name, seq_in_index
                         FROM information_schema.statistics
                         WHERE table_schema = DATABASE()
                           AND table_name = 'llm_balance_snapshots'
                         """
                     )
+                    index_rows = cursor.fetchall()
                     indexes = {
                         (str(row["table_name"]), str(row["index_name"])): int(
                             row["non_unique"]
                         )
-                        for row in cursor.fetchall()
+                        for row in index_rows
                     }
-                    _verify_migration_003_schema(columns, indexes)
+                    ordered_index_columns: dict[
+                        tuple[str, str], list[tuple[int, str]]
+                    ] = {}
+                    for row in index_rows:
+                        key = (str(row["table_name"]), str(row["index_name"]))
+                        ordered_index_columns.setdefault(key, []).append(
+                            (int(row["seq_in_index"]), str(row["column_name"]))
+                        )
+                    index_columns = {
+                        key: tuple(
+                            column for _position, column in sorted(positioned_columns)
+                        )
+                        for key, positioned_columns in ordered_index_columns.items()
+                    }
+                    _verify_migration_003_schema(
+                        columns,
+                        indexes,
+                        index_columns,
+                        column_details,
+                    )
                     return
                 cursor.execute(
                     """
@@ -1052,7 +1093,7 @@ class MySqlUsageRepository:
             )
 
     def previous_snapshot(
-        self, provider: str, currency: str, week_start: datetime
+        self, provider: str, week_start: datetime
     ) -> BalanceSnapshot | None:
         with _managed_connection(self.connection_factory) as connection:
             cursor = connection.cursor()
@@ -1063,12 +1104,11 @@ class MySqlUsageRepository:
                        report_text, captured_at
                 FROM llm_balance_snapshots
                 WHERE provider = %s
-                  AND currency = %s
                   AND report_week_start < %s
                 ORDER BY report_week_start DESC
                 LIMIT 1
                 """,
-                (provider, currency, _to_mysql_datetime(week_start)),
+                (provider, _to_mysql_datetime(week_start)),
             )
             row = cursor.fetchone()
             return _balance_snapshot_from_row(row) if row else None
@@ -1103,9 +1143,9 @@ class MySqlUsageRepository:
                        topped_up_balance, is_available, report_week_start,
                        report_text, captured_at
                 FROM llm_balance_snapshots
-                WHERE provider = %s AND currency = %s AND report_week_start = %s
+                WHERE provider = %s AND report_week_start = %s
                 """,
-                (snapshot.provider, snapshot.currency, db_week_start),
+                (snapshot.provider, db_week_start),
             )
             row = cursor.fetchone()
             if row is None:
@@ -1847,6 +1887,10 @@ def _split_sql_statements(sql: str) -> list[str]:
     return [statement.strip() for statement in sql.split(";") if statement.strip()]
 
 
+def _metadata_int(value: Any) -> int | None:
+    return int(value) if value is not None else None
+
+
 def _is_tolerated_duplicate_ddl(
     migration_name: str | None,
     statement: str,
@@ -1875,13 +1919,15 @@ def _is_tolerated_duplicate_ddl(
 def _verify_migration_003_schema(
     columns: dict[tuple[str, str], str],
     indexes: dict[tuple[str, str], int],
+    index_columns: dict[tuple[str, str], tuple[str, ...]],
+    column_details: dict[tuple[str, str], dict[str, Any]],
 ) -> None:
     required_columns = {
         ("prepared_summaries", "cache_hit_input_tokens"): "YES",
         ("prepared_summaries", "cache_miss_input_tokens"): "YES",
         ("prepared_summaries", "llm_call_count"): "YES",
         ("prepared_summaries", "estimated_cost_microusd"): "YES",
-        ("llm_balance_snapshots", "snapshot_id"): "NO",
+        ("llm_balance_snapshots", "id"): "NO",
         ("llm_balance_snapshots", "provider"): "NO",
         ("llm_balance_snapshots", "currency"): "NO",
         ("llm_balance_snapshots", "total_balance"): "NO",
@@ -1900,6 +1946,60 @@ def _verify_migration_003_schema(
     if missing_columns:
         details = ", ".join(missing_columns)
         raise RuntimeError(f"Migration 003 schema verification failed: {details}")
+    required_column_details = {
+        ("prepared_summaries", "cache_hit_input_tokens"): {"data_type": "int"},
+        ("prepared_summaries", "cache_miss_input_tokens"): {"data_type": "int"},
+        ("prepared_summaries", "llm_call_count"): {"data_type": "int"},
+        ("prepared_summaries", "estimated_cost_microusd"): {
+            "data_type": "bigint"
+        },
+        ("llm_balance_snapshots", "id"): {
+            "data_type": "bigint",
+            "extra": "auto_increment",
+        },
+        ("llm_balance_snapshots", "provider"): {
+            "data_type": "varchar",
+            "character_maximum_length": 32,
+        },
+        ("llm_balance_snapshots", "currency"): {
+            "data_type": "varchar",
+            "character_maximum_length": 8,
+        },
+        ("llm_balance_snapshots", "total_balance"): {
+            "data_type": "decimal",
+            "numeric_precision": 18,
+            "numeric_scale": 6,
+        },
+        ("llm_balance_snapshots", "granted_balance"): {
+            "data_type": "decimal",
+            "numeric_precision": 18,
+            "numeric_scale": 6,
+        },
+        ("llm_balance_snapshots", "topped_up_balance"): {
+            "data_type": "decimal",
+            "numeric_precision": 18,
+            "numeric_scale": 6,
+        },
+        ("llm_balance_snapshots", "is_available"): {"data_type": "tinyint"},
+        ("llm_balance_snapshots", "report_week_start"): {
+            "data_type": "datetime",
+            "datetime_precision": 6,
+        },
+        ("llm_balance_snapshots", "report_text"): {"data_type": "text"},
+        ("llm_balance_snapshots", "captured_at"): {
+            "data_type": "datetime",
+            "datetime_precision": 6,
+        },
+    }
+    invalid_column_details = [
+        f"{table}.{column} {attribute}"
+        for (table, column), expected_details in required_column_details.items()
+        for attribute, expected_value in expected_details.items()
+        if column_details.get((table, column), {}).get(attribute) != expected_value
+    ]
+    if invalid_column_details:
+        details = ", ".join(invalid_column_details)
+        raise RuntimeError(f"Migration 003 schema verification failed: {details}")
     required_indexes = {
         ("llm_balance_snapshots", "PRIMARY"): 0,
         ("llm_balance_snapshots", "uq_llm_balance_report_week"): 0,
@@ -1911,6 +2011,21 @@ def _verify_migration_003_schema(
     ]
     if missing_indexes:
         details = ", ".join(missing_indexes)
+        raise RuntimeError(f"Migration 003 schema verification failed: {details}")
+    required_index_columns = {
+        ("llm_balance_snapshots", "PRIMARY"): ("id",),
+        ("llm_balance_snapshots", "uq_llm_balance_report_week"): (
+            "provider",
+            "report_week_start",
+        ),
+    }
+    invalid_index_columns = [
+        f"{table}.{index} columns"
+        for (table, index), expected_columns in required_index_columns.items()
+        if index_columns.get((table, index)) != expected_columns
+    ]
+    if invalid_index_columns:
+        details = ", ".join(invalid_index_columns)
         raise RuntimeError(f"Migration 003 schema verification failed: {details}")
 
 

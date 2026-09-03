@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
@@ -179,6 +180,95 @@ def test_usage_report_retries_use_stable_weekly_update_id_and_send_once(
 
     assert effects.update_ids == [-20260831, -20260831]
     assert telegram.sent == [(12345, "frozen weekly report")]
+
+
+@pytest.mark.parametrize("stored_status", ["sending", "review_required"])
+def test_usage_report_marks_existing_unresolved_effect_unhealthy(
+    monkeypatch, stored_status
+) -> None:
+    week_start = datetime(2026, 8, 31, 0, 0, tzinfo=ZoneInfo("Europe/Moscow"))
+    frozen = FrozenUsageReport(
+        week_start=week_start,
+        report_text="frozen weekly report",
+        balance=None,
+    )
+
+    class FakeService:
+        def prepare_weekly(self, now):
+            return frozen
+
+    class FakeEffects:
+        def begin(self, effect_key, update_id, method, payload_hash, now):
+            assert effect_key == "update:-20260831:send_message:0"
+            return stored_status, None
+
+        def mark_sent(self, effect_key, message_id, now):
+            raise AssertionError("unresolved effect must not be marked sent")
+
+        def mark_review_required(self, effect_key, error, now):
+            raise AssertionError("existing effect must not be rewritten")
+
+    class FakeTelegram:
+        def send_message(self, chat_id, text, reply_markup=None, parse_mode=None):
+            raise AssertionError("unresolved effect must not be resent")
+
+    monkeypatch.setattr(cli.BotCopy, "load", lambda path: object())
+    monkeypatch.setattr(cli, "MySqlUsageRepository", lambda connect: object())
+    monkeypatch.setattr(
+        cli,
+        "UsageReportService",
+        lambda repository, balance_client, copy: FakeService(),
+    )
+    monkeypatch.setattr(
+        cli, "MySqlTelegramEffectRepository", lambda connect: FakeEffects()
+    )
+    monkeypatch.setattr(cli, "TelegramClient", lambda token: FakeTelegram())
+
+    result = cli._run_command(
+        "usage-report",
+        make_settings(12345),
+        SimpleNamespace(connect=lambda: None),
+        NOW,
+    )
+
+    assert result == {
+        "command": "usage-report",
+        "healthy": False,
+        "status": "unresolved",
+        "week_start": week_start.isoformat(),
+    }
+
+
+def test_main_returns_nonzero_for_unresolved_usage_report(monkeypatch, capsys) -> None:
+    settings = make_settings(12345)
+    database = SimpleNamespace(connect=lambda: None)
+
+    class FakeLocks:
+        def acquire(self, key, now):
+            return "owner-token"
+
+        def release(self, key, owner_token):
+            assert (key, owner_token) == (
+                "brevity:usage-report",
+                "owner-token",
+            )
+
+    monkeypatch.setattr(cli, "load_dotenv", lambda: None)
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    monkeypatch.setattr(cli, "MySqlDatabase", lambda loaded: database)
+    monkeypatch.setattr(cli, "MySqlJobLockRepository", lambda connect: FakeLocks())
+    monkeypatch.setattr(
+        cli,
+        "_run_command",
+        lambda *args, **kwargs: {
+            "command": "usage-report",
+            "healthy": False,
+            "status": "unresolved",
+        },
+    )
+
+    assert cli.main(["usage-report"]) == 1
+    assert json.loads(capsys.readouterr().out)["status"] == "unresolved"
 
 
 def test_recover_composes_one_catalog_and_dispatches_all_handlers_once(monkeypatch) -> None:

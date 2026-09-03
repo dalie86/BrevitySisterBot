@@ -15,11 +15,15 @@ def estimate_flash_cost_microusd(
     output: int,
     requested_at: datetime,
 ) -> int:
-    utc_time = (
+    utc_requested_at = (
         requested_at.replace(tzinfo=timezone.utc)
         if requested_at.tzinfo is None
         else requested_at.astimezone(timezone.utc)
-    ).time()
-    rates = PEAK if any(start <= utc_time < end for start, end in PEAK_RANGES) else OFF_PEAK
+    )
+    utc_time = utc_requested_at.time()
+    is_peak = utc_requested_at.weekday() < 5 and any(
+        start <= utc_time < end for start, end in PEAK_RANGES
+    )
+    rates = PEAK if is_peak else OFF_PEAK
     total = Decimal(hit) * rates[0] + Decimal(miss) * rates[1] + Decimal(output) * rates[2]
     return int(total.quantize(Decimal("1"), rounding=ROUND_HALF_UP))

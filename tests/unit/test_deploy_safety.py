@@ -54,6 +54,22 @@ def test_deploy_runs_deepseek_smoke_before_passenger_restart() -> None:
     assert positions == sorted(positions)
 
 
+def test_readme_beget_preparation_steps_are_consecutive() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+    preparation = readme.split("Подготовка:\n", 1)[1].split(
+        "Deploy не переносит", 1
+    )[0]
+
+    assert re.findall(r"^(\d+)\.", preparation, flags=re.MULTILINE) == [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+    ]
+
+
 def test_beget_defaults_to_python_310() -> None:
     example = Path("hosting.env.example").read_text(encoding="utf-8")
     script = Path("scripts/deploy_beget.exp").read_text(encoding="utf-8")

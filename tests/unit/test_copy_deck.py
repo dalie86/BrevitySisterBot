@@ -42,8 +42,14 @@ def test_copy_deck_preserves_private_onboarding_constraints() -> None:
     assert "проверяет доступ, после успеха запоминает группу" in deck
     assert "сразу начинает готовить сегодняшнюю личную сводку" in deck
     assert "Предварительно отправлять `/summary` в группе не требуется" in deck
-    assert "Одна запомненная доступная группа запускает подготовку сразу" in deck
-    assert "если их несколько, бот предлагает выбор" in deck
+    assert "Обычный `/start` в личном чате показывает приветствие с кнопкой" in deck
+    assert "не запускает подготовку сводки" in deck
+    assert "ровно одна запомненная доступная группа" in deck
+    assert "единственная подключённая группа бота" in deck
+    assert "иначе бот предлагает выбрать группу" in deck
+    assert "на обычный `/start` в личном чате" not in deck.split(
+        "## Молчаливые сценарии", 1
+    )[1].split("## Готовый запрос", 1)[0]
 
 
 def test_copy_deck_includes_weekly_usage_report_wording() -> None:

@@ -134,10 +134,10 @@ https://brevity.prosto-kosmos.ru/telegram/webhook
    link. Для прежнего провайдера отдельная production-настройка не нужна.
    Тексты сводок отправляются на обработку DeepSeek в КНР; не помещайте в них
    данные, которые нельзя передавать внешнему обработчику.
-5. Создать локальный `.env.hosting` по
+4. Создать локальный `.env.hosting` по
    [`hosting.env.example`](hosting.env.example).
-6. Настроить Python/Passenger для каталога поддомена.
-7. Запустить:
+5. Настроить Python/Passenger для каталога поддомена.
+6. Запустить:
 
 ```bash
 scripts/deploy_beget.exp

@@ -45,10 +45,7 @@ class UsageReportService:
         )
         balance_status, balances = self._live_balance()
         balance_available = balance_status == "available"
-        selected = _preferred_balance(balances) if balance_available else None
-        previous = self.repository.previous_snapshot(
-            "deepseek", selected.currency if selected is not None else "CNY", week_start
-        )
+        previous = self.repository.previous_snapshot("deepseek", week_start)
         return {
             "provider": "deepseek",
             "as_of": utc_now.isoformat(),
@@ -73,9 +70,7 @@ class UsageReportService:
         selected = (
             _preferred_balance(balances) if balance_status == "available" else None
         )
-        previous = self.repository.previous_snapshot(
-            "deepseek", selected.currency if selected is not None else "CNY", week_start
-        )
+        previous = self.repository.previous_snapshot("deepseek", week_start)
         report_text = _format_weekly_report(
             self.copy,
             week_start,
@@ -221,6 +216,9 @@ def _format_weekly_report(
         return "\n".join(lines)
     if not previous.is_available:
         lines.append(copy.value("usage_report", "previous_unavailable"))
+        return "\n".join(lines)
+    if previous.currency != balance.currency:
+        lines.append(copy.value("usage_report", "first_forecast"))
         return "\n".join(lines)
 
     delta = balance.total_balance - previous.total_balance

@@ -78,6 +78,18 @@ def test_catalog_rejects_missing_required_placeholder(tmp_path: Path) -> None:
         BotCopy.load(broken)
 
 
+def test_catalog_rejects_missing_start_summary_button(tmp_path: Path) -> None:
+    source = Path("content/bot_copy.ru.toml").read_text(encoding="utf-8")
+    broken = tmp_path / "copy.toml"
+    broken.write_text(
+        source.replace('start_summary = "Получить сводку"\n', "", 1),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CopyConfigurationError, match="buttons.start_summary"):
+        BotCopy.load(broken)
+
+
 def test_render_rejects_unknown_or_missing_values() -> None:
     copy = BotCopy.load(Path("content/bot_copy.ru.toml"))
 

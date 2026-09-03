@@ -18,6 +18,7 @@ class FakeUsageRepository:
     def __init__(self, previous=None) -> None:
         self.previous = previous
         self.aggregate_calls = []
+        self.previous_calls = []
         self.snapshot_calls = []
         self.snapshots = {}
 
@@ -41,14 +42,15 @@ class FakeUsageRepository:
             estimated_cost_microusd=2_500_000,
         )
 
-    def previous_snapshot(self, provider, currency, week_start):
+    def previous_snapshot(self, provider, week_start):
         assert provider == "deepseek"
         assert week_start == WEEK_START
-        return self.previous if currency == "CNY" else None
+        self.previous_calls.append((provider, week_start))
+        return self.previous
 
     def get_or_create_snapshot(self, snapshot):
         self.snapshot_calls.append(snapshot)
-        key = (snapshot.provider, snapshot.currency, snapshot.report_week_start)
+        key = (snapshot.provider, snapshot.report_week_start)
         if key not in self.snapshots:
             self.snapshots[key] = snapshot
         return self.snapshots[key]
@@ -78,10 +80,10 @@ class FakeBalanceClient:
         )
 
 
-def previous(total: str) -> BalanceSnapshot:
+def previous(total: str, *, currency: str = "CNY") -> BalanceSnapshot:
     return BalanceSnapshot(
         provider="deepseek",
-        currency="CNY",
+        currency=currency,
         total_balance=Decimal(total),
         granted_balance=Decimal("0"),
         topped_up_balance=Decimal(total),
@@ -118,6 +120,7 @@ def test_inspect_includes_previous_valid_balance_snapshot() -> None:
     assert result["previous_balance"]["currency"] == "CNY"
     assert result["previous_balance"]["total_balance"] == "50"
     assert result["previous_balance"]["is_available"] is True
+    assert repository.previous_calls == [("deepseek", WEEK_START)]
 
 
 def test_inspect_balance_failure_does_not_block_local_stats() -> None:
@@ -181,6 +184,51 @@ def test_weekly_report_prefers_cny_and_freezes_first_text_on_retry() -> None:
     assert retry.report_text == first.report_text
     assert retry.balance.total_balance == Decimal("49")
     assert len(repository.snapshot_calls) == 2
+
+
+def test_weekly_report_freezes_unavailable_text_before_usd_retry() -> None:
+    repository = FakeUsageRepository()
+    service = UsageReportService(repository, FakeBalanceClient(fail=True))
+
+    first = service.prepare_weekly(NOW)
+    service.balance_client = FakeBalanceClient(Decimal("10"), currency="USD")
+    retry = service.prepare_weekly(NOW)
+
+    assert retry.report_text == first.report_text
+    assert retry.balance is None
+    assert "Баланс недоступен" in retry.report_text
+    assert len(repository.snapshots) == 1
+
+
+def test_weekly_report_freezes_usd_text_before_unavailable_retry() -> None:
+    repository = FakeUsageRepository()
+    service = UsageReportService(
+        repository, FakeBalanceClient(Decimal("10"), currency="USD")
+    )
+
+    first = service.prepare_weekly(NOW)
+    service.balance_client = FakeBalanceClient(fail=True)
+    retry = service.prepare_weekly(NOW)
+
+    assert retry.report_text == first.report_text
+    assert retry.balance is not None
+    assert retry.balance.currency == "USD"
+    assert "10.00 USD" in retry.report_text
+    assert len(repository.snapshots) == 1
+
+
+def test_currency_change_next_week_omits_delta_and_runway() -> None:
+    repository = FakeUsageRepository(previous("50", currency="CNY"))
+
+    report = UsageReportService(
+        repository, FakeBalanceClient(Decimal("49"), currency="USD")
+    ).prepare_weekly(NOW)
+
+    assert "49.00 USD" in report.report_text
+    assert "Изменение:" not in report.report_text
+    assert "Пополнение:" not in report.report_text
+    assert "недель" not in report.report_text
+    assert "прогноз появится через неделю" in report.report_text
 
 
 def test_weekly_report_handles_non_cny_and_unavailable_balance_safely() -> None:
