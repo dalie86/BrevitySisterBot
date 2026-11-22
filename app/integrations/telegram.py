@@ -22,6 +22,7 @@ class IncomingMessage:
     sender_is_bot: bool
     text: str
     sent_at: datetime
+    ephemeral_message_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -83,15 +84,23 @@ class TelegramClient:
         text: str,
         reply_markup: dict | None = None,
         parse_mode: str | None = None,
+        *,
+        receiver_user_id: int | None = None,
     ) -> int:
         payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
         if parse_mode is not None:
             payload["parse_mode"] = parse_mode
+        if receiver_user_id is not None:
+            payload["ephemeral_message_parameters"] = {"receiver_user_id": receiver_user_id}
         result = self._call("sendMessage", payload)
         if not isinstance(result, dict):
             raise TelegramApiError("Telegram sendMessage response is invalid")
+        if receiver_user_id is not None:
+            if not result.get("ephemeral_message_id"):
+                raise TelegramApiError("Telegram did not return an ephemeral message identifier")
+            return int(result["ephemeral_message_id"])
         return int(result["message_id"])
 
     def get_chat_member(self, chat_id: int, user_id: int) -> TelegramMembership:
@@ -114,6 +123,19 @@ class TelegramClient:
 
     def answer_callback_query(self, callback_id: str) -> None:
         self._call("answerCallbackQuery", {"callback_query_id": callback_id})
+
+    def set_my_commands(
+        self,
+        commands: list[dict],
+        *,
+        scope: dict,
+        language_code: str = "",
+    ) -> None:
+        result = self._call("setMyCommands", {
+            "commands": commands, "scope": scope, "language_code": language_code,
+        })
+        if result is not True:
+            raise TelegramApiError("Telegram setMyCommands did not succeed")
 
     def _call(self, method: str, payload: dict[str, Any]) -> Any:
         request = urllib.request.Request(
@@ -226,6 +248,10 @@ def _parse_message(raw_message: dict[str, Any]) -> IncomingMessage:
         sender_is_bot=bool(raw_user.get("is_bot", False)),
         text=text,
         sent_at=datetime.fromtimestamp(int(raw_message["date"]), tz=timezone.utc),
+        ephemeral_message_id=(
+            int(raw_message["ephemeral_message_id"])
+            if raw_message.get("ephemeral_message_id") is not None else None
+        ),
     )
 
 

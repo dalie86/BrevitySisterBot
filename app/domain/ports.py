@@ -196,6 +196,8 @@ class TelegramGateway(Protocol):
         text: str,
         reply_markup: dict | None = None,
         parse_mode: str | None = None,
+        *,
+        receiver_user_id: int | None = None,
     ) -> int:
         raise NotImplementedError
 

@@ -67,10 +67,15 @@ class DurableTelegramGateway:
         text: str,
         reply_markup: dict | None = None,
         parse_mode: str | None = None,
+        *,
+        receiver_user_id: int | None = None,
     ) -> int:
+        delivery_options = {}
+        if receiver_user_id is not None:
+            delivery_options["receiver_user_id"] = receiver_user_id
         update_id = _current_update_id.get()
         if update_id is None:
-            return self.raw.send_message(chat_id, text, reply_markup, parse_mode)
+            return self.raw.send_message(chat_id, text, reply_markup, parse_mode, **delivery_options)
 
         sequence = _effect_counter.get()
         _effect_counter.set(sequence + 1)
@@ -78,6 +83,8 @@ class DurableTelegramGateway:
         payload = {"chat_id": chat_id, "text": text, "reply_markup": reply_markup}
         if parse_mode is not None:
             payload["parse_mode"] = parse_mode
+        if receiver_user_id is not None:
+            payload["receiver_user_id"] = receiver_user_id
         payload_hash = _payload_hash(payload)
         current = self.now()
         existing = self.effects.begin(
@@ -99,6 +106,7 @@ class DurableTelegramGateway:
                 text,
                 reply_markup,
                 parse_mode,
+                **delivery_options,
             )
         except Exception as exc:
             self.effects.mark_review_required(effect_key, str(exc), self.now())

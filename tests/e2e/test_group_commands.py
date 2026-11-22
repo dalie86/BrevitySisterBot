@@ -64,12 +64,14 @@ class FakeTelegram:
             777: TelegramMembership("administrator", True),
         }
         self.sent = []
+        self.recipients = []
 
     def get_chat_member(self, chat_id, user_id) -> TelegramMembership:
         return self.memberships[user_id]
 
-    def send_message(self, chat_id, text, reply_markup=None, parse_mode=None) -> int:
+    def send_message(self, chat_id, text, reply_markup=None, parse_mode=None, *, receiver_user_id=None) -> int:
         self.sent.append((chat_id, text, reply_markup, parse_mode))
+        self.recipients.append(receiver_user_id)
         return len(self.sent)
 
     def answer_callback_query(self, callback_id) -> None:
@@ -276,3 +278,34 @@ def test_disable_daily_uses_configured_copy_and_keeps_group_tracked() -> None:
     assert chats.enabled[-1001] is False
     assert chats.is_tracked(-1001) is True
     assert telegram.sent[-1][1].startswith("Ежедневные сводки отключены")
+
+
+def test_untracked_group_summary_error_is_visible_only_to_requester() -> None:
+    handler, _, _, _, telegram, requests = build_handler()
+    handler(parse_update(group_update("/summary@BrevitySisterBot")))
+
+    assert telegram.recipients == [42]
+    assert requests == []
+
+
+def test_hidden_messages_are_never_collected_for_shared_summaries() -> None:
+    handler, chats, _, messages, telegram, _ = build_handler()
+    chats.tracked.add(-1001)
+    for text in ("Личный текст", "/start", "/enable_daily"):
+        payload = group_update(text, message_id=0)
+        payload["message"]["ephemeral_message_id"] = 900
+        handler(parse_update(payload))
+
+    assert messages.saved == []
+    assert telegram.sent == []
+
+
+def test_hidden_summary_command_still_dispatches() -> None:
+    handler, chats, _, messages, _, requests = build_handler()
+    chats.tracked.add(-1001)
+    payload = group_update("/summary@BrevitySisterBot", message_id=0)
+    payload["message"]["ephemeral_message_id"] = 900
+    handler(parse_update(payload))
+
+    assert requests == [(-1001, 42)]
+    assert messages.saved == []

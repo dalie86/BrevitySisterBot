@@ -352,9 +352,7 @@ def test_repair_uses_catalog_template_and_caps_invalid_response_at_6000() -> Non
             self.user_prompts.append(user_prompt)
             if len(self.user_prompts) == 1:
                 return LlmResult(invalid, "deepseek", "model", 10)
-            return LlmResult(
-                '{"headline":"fixed","topics":[]}', "deepseek", "model", 10
-            )
+            return LlmResult('{"headline":"fixed","topics":[]}', "deepseek", "model", 10)
 
     llm = RepairLlm()
     service, _, _ = make_service(5, llm)
@@ -364,3 +362,58 @@ def test_repair_uses_catalog_template_and_caps_invalid_response_at_6000() -> Non
     assert llm.user_prompts[1] == service.copy.render(
         "prompts", "repair", invalid_model_response=invalid[:6000]
     )
+
+
+def test_pavel_display_name_is_bound_to_telegram_id_before_llm():
+    service, llm, _ = make_service(5)
+    service.messages.items[0] = replace(
+        service.messages.items[0],
+        user_id=205580587,
+        full_name="Pavel Shechkov",
+    )
+    service.messages.items[1] = replace(
+        service.messages.items[1],
+        user_id=205580587,
+        full_name="Новое имя профиля",
+    )
+    service.generate(-1001, SummaryKind.ON_DEMAND, 205580587, NOW)
+    assert "Павел:" in llm.user_prompts[0]
+    assert "Pavel Shechkov" not in llm.user_prompts[0]
+    assert "Новое имя профиля" not in llm.user_prompts[0]
+    assert "User 2" in llm.user_prompts[0]
+
+
+def test_generated_and_cached_summary_remove_known_full_name_variants():
+    llm = FakeLlm(
+        '{"headline":"Планы Павла Щечкова","topics":[{"title":"Встреча с Павлом Шечковым","details":"Павел Щечков предложил встретиться. Алексей Шечков ответил."}]}'
+    )
+    service, _, store = make_service(5, llm)
+    first = service.generate(-1001, SummaryKind.ON_DEMAND, 205580587, NOW)
+    assert "Планы Павла" in first.text
+    assert "Встреча с Павлом" in first.text
+    assert "Павел предложил" in first.text
+    assert "Щечков" not in first.text
+    assert "Алексей Шечков ответил" in first.text
+    key = next(iter(store.items))
+    store.items[key] = "<b>Планы Павла Щечкова</b>\nPavel Shechkov сообщил о поездке."
+    cached = service.generate(-1001, SummaryKind.ON_DEMAND, 205580587, NOW)
+    assert cached.text == "<b>Планы Павла</b>\nПавел сообщил о поездке."
+    assert cached.outcome == "cached"
+    assert llm.call_count == 1
+
+
+def test_fallback_uses_canonical_name_and_normalizes_message_mentions():
+    llm = FakeLlm()
+    llm.error = TimeoutError("offline")
+    service, _, _ = make_service(5, llm)
+    service.messages.items = [
+        replace(
+            m, user_id=205580587, full_name="Pavel Shechkov", text="Встретимся с Павлом Щечковым"
+        )
+        for m in service.messages.items
+    ]
+    result = service.generate(-1001, SummaryKind.ON_DEMAND, 205580587, NOW)
+    assert "Активные участники: Павел." in result.text
+    assert "Встретимся с Павлом" in result.text
+    assert "Щечков" not in result.text
+    assert "Shechkov" not in result.text

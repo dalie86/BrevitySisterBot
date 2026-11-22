@@ -15,9 +15,11 @@ COPY = BotCopy.load(Path("content/bot_copy.ru.toml"))
 class FakeTelegram:
     def __init__(self) -> None:
         self.sent = []
+        self.recipients = []
 
-    def send_message(self, chat_id, text, reply_markup=None, parse_mode=None):
+    def send_message(self, chat_id, text, reply_markup=None, parse_mode=None, *, receiver_user_id=None):
         self.sent.append((chat_id, text, reply_markup, parse_mode))
+        self.recipients.append(receiver_user_id)
         return len(self.sent)
 
 
@@ -110,3 +112,21 @@ def test_non_generated_outcomes_use_toml_copy(outcome, copy_key) -> None:
         None,
         None,
     )
+
+
+@pytest.mark.parametrize("outcome", ["generated", "preparing", "insufficient_messages"])
+def test_group_responses_are_ephemeral(outcome):
+    service, telegram = make_service(outcome)
+    service.request(chat_id=-1001, requester_user_id=42, destination_chat_id=-1001)
+    assert telegram.recipients == [42, 42]
+
+
+def test_group_delivery_failure_never_retries_publicly():
+    service, telegram = make_service()
+    def fail(chat_id, text, **kwargs):
+        telegram.recipients.append(kwargs.get("receiver_user_id"))
+        raise RuntimeError("rejected")
+    telegram.send_message = fail
+    with pytest.raises(RuntimeError, match="rejected"):
+        service.request(chat_id=-1001, requester_user_id=42, destination_chat_id=-1001)
+    assert telegram.recipients == [42]

@@ -19,6 +19,8 @@ from app.domain.models import (
 )
 from app.domain.ports import LlmGateway, MessageRepository, SummaryRepository
 
+from app.services.participant_names import normalize_summary_names, participant_name
+
 TRANSCRIPT_CHARACTER_LIMIT = 18_000
 TELEGRAM_SUMMARY_LIMIT = 3_900
 
@@ -87,7 +89,7 @@ class SummaryService:
                 summary_date=local_now.date().isoformat(),
                 kind=kind,
                 source_hash=source_hash,
-                text=cached,
+                text=normalize_summary_names(cached),
                 status=SummaryStatus.PREPARED,
                 outcome="cached",
                 message_count=len(messages),
@@ -153,7 +155,7 @@ class SummaryService:
             summary_date=local_now.date().isoformat(),
             kind=kind,
             source_hash=source_hash,
-            text=text,
+            text=normalize_summary_names(text),
             status=SummaryStatus.PREPARED,
             provider=provider,
             model=model,
@@ -184,8 +186,8 @@ def _build_user_prompt(messages: Sequence[StoredMessage], copy: BotCopy) -> str:
             "prompts",
             "transcript_line",
             iso_datetime=message.sent_at.isoformat(),
-            participant_name=message.full_name,
-            message_text=message.text,
+            participant_name=participant_name(message.user_id, message.full_name),
+            message_text=normalize_summary_names(message.text),
         )
         for message in messages
     ]
@@ -247,7 +249,7 @@ def _render_payload(payload: dict[str, Any], copy: BotCopy) -> str:
 
 
 def _heuristic_summary(messages: Sequence[StoredMessage], copy: BotCopy) -> str:
-    participants = Counter(message.full_name for message in messages)
+    participants = Counter(participant_name(message.user_id, message.full_name) for message in messages)
     top_people = ", ".join(_escaped(name) for name, _ in participants.most_common(3))
     recent = [message.text.strip() for message in messages[-3:] if message.text.strip()]
     recent_messages = [

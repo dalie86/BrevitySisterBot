@@ -132,3 +132,11 @@ def test_ambiguous_publication_failure_requires_review_not_retry() -> None:
     assert report.errors == 1
     assert store.review_required == [(7, "ambiguous")]
     assert store.sent_ids == set()
+
+
+def test_prepared_daily_summary_uses_preferred_name_before_publication():
+    lifecycle, store, telegram = make_service()
+    store.publications = [(7, -1001, "<b>Планы Павла Щечкова</b>\nПавел Шечков сообщил о поездке.")]
+    report = lifecycle.publish_day(NOW)
+    assert report.sent_summaries == 1
+    assert telegram.sent[0][1] == "<b>Планы Павла</b>\nПавел сообщил о поездке."

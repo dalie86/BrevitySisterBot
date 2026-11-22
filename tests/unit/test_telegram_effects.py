@@ -141,3 +141,27 @@ def test_parse_mode_changes_durable_payload_hash() -> None:
         gateway.send_message(42, "Готово", parse_mode="HTML")
 
     assert effects.payload_hashes[0] != effects.payload_hashes[1]
+
+
+def test_ephemeral_delivery_is_durable_and_hash_includes_recipient() -> None:
+    class EphemeralTelegram(FakeTelegram):
+        def send_message(self, chat_id, text, reply_markup=None, parse_mode=None, *, receiver_user_id=None):
+            self.sent.append((chat_id, text, receiver_user_id))
+            return 987
+
+    raw = EphemeralTelegram()
+    effects = FakeEffects()
+    gateway = DurableTelegramGateway(raw=raw, effects=effects, now=lambda: datetime.now(timezone.utc))
+
+    for _ in range(2):
+        with telegram_update_scope(123):
+            assert gateway.send_message(-1001, "Готово", receiver_user_id=42) == 987
+    with telegram_update_scope(124):
+        gateway.send_message(-1001, "Готово", receiver_user_id=43)
+
+    assert raw.sent == [(-1001, "Готово", 42), (-1001, "Готово", 43)]
+    assert effects.payload_hashes[0] == effects.payload_hashes[1]
+    assert effects.payload_hashes[0] != effects.payload_hashes[2]
+
+    gateway.send_message(-1001, "Без update", receiver_user_id=44)
+    assert raw.sent[-1] == (-1001, "Без update", 44)

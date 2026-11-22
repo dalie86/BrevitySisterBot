@@ -51,6 +51,9 @@ class GroupUpdateHandler:
 
         current = self.now()
         command = _command_name(message.text, self.telegram_bot_username)
+        if message.ephemeral_message_id is not None and command != "/summary":
+            # Never include private input in the shared summary buffer.
+            return
         if command is None and message.text.strip().startswith("/"):
             return
         if command == "/start":
@@ -116,6 +119,7 @@ class GroupUpdateHandler:
                 self.telegram.send_message(
                     message.chat_id,
                     self.copy.value("messages", "group_not_connected"),
+                    receiver_user_id=message.user_id,
                 )
                 return
             self.members.remember_group(

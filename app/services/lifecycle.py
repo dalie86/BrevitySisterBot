@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from app.domain.models import SummaryKind
 from app.domain.ports import TelegramGateway
 from app.services.summaries import SummaryService
+from app.services.participant_names import normalize_summary_names
 
 
 class LifecycleStore(Protocol):
@@ -140,7 +141,7 @@ class LifecycleService:
             try:
                 telegram_message_id = self.telegram.send_message(
                     chat_id,
-                    text,
+                    normalize_summary_names(text),
                     parse_mode="HTML",
                 )
                 self.store.mark_publication_sent(

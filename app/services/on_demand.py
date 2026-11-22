@@ -41,8 +41,11 @@ class OnDemandSummaryService:
         ack_reply_markup: dict | None = None,
         send_ack: bool = True,
     ) -> None:
+        delivery_options = {}
+        if destination_chat_id < 0:
+            delivery_options["receiver_user_id"] = requester_user_id
         if send_ack:
-            self.acknowledge(destination_chat_id, ack_reply_markup)
+            self.acknowledge(destination_chat_id, ack_reply_markup, **delivery_options)
         result = self.summaries.generate(
             chat_id,
             SummaryKind.ON_DEMAND,
@@ -53,25 +56,35 @@ class OnDemandSummaryService:
             self.telegram.send_message(
                 destination_chat_id,
                 self.copy.value("messages", "summary_in_progress"),
+                **delivery_options,
             )
             return
         if result.outcome == "insufficient_messages":
             self.telegram.send_message(
                 destination_chat_id,
                 self.copy.value("messages", "not_enough_messages"),
+                **delivery_options,
             )
             return
-        self.telegram.send_message(destination_chat_id, result.text, parse_mode="HTML")
+        self.telegram.send_message(
+            destination_chat_id, result.text, parse_mode="HTML", **delivery_options
+        )
 
     def acknowledge(
         self,
         destination_chat_id: int,
         reply_markup: dict | None = None,
+        *,
+        receiver_user_id: int | None = None,
     ) -> None:
+        delivery_options = {}
+        if receiver_user_id is not None:
+            delivery_options["receiver_user_id"] = receiver_user_id
         self.telegram.send_message(
             destination_chat_id,
             self.copy.value("messages", "summary_accepted"),
             reply_markup=reply_markup,
+            **delivery_options,
         )
 
 
